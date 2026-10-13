@@ -1035,17 +1035,37 @@ end
 
 local function ApplyLock()
     if not mainFrame or not db then return end
+    mainFrame:SetMovable(not db.locked)
+    -- The mouse stays enabled while locked: right-click has to be able to lock
+    -- and unlock the icon, so the frame cannot stop listening for it.
+    mainFrame:EnableMouse(true)
     if db.locked then
-        mainFrame:EnableMouse(false)
-        mainFrame:SetMovable(false)
         if glowTex then glowTex:Hide() end
         if dragLabel then dragLabel:Hide() end
     else
-        mainFrame:EnableMouse(true)
-        mainFrame:SetMovable(true)
         mainFrame:RegisterForDrag("LeftButton")
         if glowTex then glowTex:Show() end
         if dragLabel then dragLabel:Show() end
+    end
+end
+
+local function ShiftHeld()
+    if type(IsShiftKeyDown) ~= "function" then return false end
+    local ok, down = pcall(IsShiftKeyDown)
+    if not ok or Sealed(down) then return false end
+    return down == true
+end
+
+-- The one place the lock state changes, so the slash command and the mouse
+-- shortcuts always behave and report the same way.
+local function SetLocked(locked)
+    if not db or db.locked == locked then return end
+    db.locked = locked
+    ApplyLock()
+    if locked then
+        Print("Frame LOCKED. Shift right-click the icon (or /mri lock) to unlock.")
+    else
+        Print("Frame UNLOCKED. Drag to move, right-click to lock.")
     end
 end
 
@@ -1155,7 +1175,7 @@ local function CreateUI()
     dragLabel:SetPoint("TOP", mainFrame, "BOTTOM", 0, -6)
     pcall(function() dragLabel:SetFont("Fonts\\FRIZQT__.TTF", 12, "OUTLINE") end)
     dragLabel:SetTextColor(0, 1, 0.5, 1)
-    dragLabel:SetText("DRAG ME  -  /mri lock")
+    dragLabel:SetText("DRAG ME  -  R-CLICK TO LOCK")
 
     local pulse, direction = 0.3, 1
     local pulser = CreateFrame("Frame", nil, mainFrame)
@@ -1165,6 +1185,13 @@ local function CreateUI()
         if pulse >= 0.7 then pulse, direction = 0.7, -1 end
         if pulse <= 0.1 then pulse, direction = 0.1, 1 end
         glowTex:SetAlpha(pulse)
+    end)
+
+    -- Right-click locks the icon in place, shift right-click unlocks it again.
+    mainFrame:RegisterForClicks("AnyUp")
+    mainFrame:SetScript("OnMouseUp", function(_, button)
+        if button ~= "RightButton" then return end
+        SetLocked(not ShiftHeld())
     end)
 
     mainFrame:SetScript("OnDragStart", function(self)
@@ -1180,12 +1207,17 @@ local function CreateUI()
     end)
 
     mainFrame:SetScript("OnEnter", function(self)
-        if db and db.locked then return end
         if type(GameTooltip) ~= "table" then return end
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
         GameTooltip:ClearLines()
         GameTooltip:AddLine("Mage Range Indicator", 0, 0.8, 1)
         GameTooltip:AddLine(client.flavor .. "  |cFF808080interface " .. client.iface .. "|r", 0.7, 0.7, 0.7)
+        if db and db.locked then
+            GameTooltip:AddLine(" ")
+            GameTooltip:AddLine("Locked - shift right-click to unlock", 0, 1, 0)
+            GameTooltip:Show()
+            return
+        end
         if #spells == 0 then
             GameTooltip:AddLine("No spells resolved yet.", 1, 0.5, 0.5)
         else
@@ -1197,8 +1229,8 @@ local function CreateUI()
             end
         end
         GameTooltip:AddLine(" ")
-        GameTooltip:AddLine("/mri lock  /mri size  /mri opacity", 0, 1, 0)
-        GameTooltip:AddLine("/mri status  /mri probe  /mri help", 0, 1, 0)
+        GameTooltip:AddLine("Right-click to lock  |  drag to move", 0, 1, 0.5)
+        GameTooltip:AddLine("/mri help  /mri status  /mri probe", 0, 1, 0)
         GameTooltip:Show()
     end)
     mainFrame:SetScript("OnLeave", function()
@@ -1373,6 +1405,7 @@ local function HandleCommand(message)
 
     if command == "" or command == "help" then
         Print("/mri lock - toggle lock/unlock")
+        Print("Right-click the icon to lock it, shift right-click to unlock it")
         Print("/mri size <16-128> - icon size")
         Print("/mri opacity <0.0-1.0> - transparency")
         Print("/mri reset - settings back to defaults")
@@ -1384,9 +1417,7 @@ local function HandleCommand(message)
         Print("/mri range <spell> <yards|auto> - correct a range by hand")
         Print("/mri auto on|off - pick up unlisted short-range spells")
     elseif command == "lock" then
-        db.locked = not db.locked
-        ApplyLock()
-        Print(db.locked and "Frame LOCKED. /mri lock to unlock." or "Frame UNLOCKED. Drag to move.")
+        SetLocked(not db.locked)
     elseif command == "size" then
         local size = tonumber(argument)
         if not size then

@@ -62,12 +62,19 @@ health or names.
 compartment through the TOC (`AddonCompartmentFunc`) and the click toggles the
 indicator.
 
+**Locking from the icon itself.** While the frame is unlocked you can drag it;
+right-clicking the icon locks it in place, and shift right-clicking unlocks it
+again. The mouse stays enabled while locked so the unlock shortcut is always
+reachable, and the tooltip says which shortcut applies in each state.
+
 ## Commands
 
 | Command | What it does |
 | --- | --- |
 | `/mri` or `/mri help` | List the commands |
-| `/mri lock` | Lock or unlock the frame (unlocked shows the drag hint and glow) |
+| Right-click the icon | Lock the frame in place |
+| Shift right-click the icon | Unlock the frame so it can be dragged |
+| `/mri lock` | Toggle lock/unlock (same as the mouse shortcuts) |
 | `/mri size <16-128>` | Icon size |
 | `/mri opacity <0.0-1.0>` | Transparency |
 | `/mri show` / `/mri hide` | Show or hide the indicator |

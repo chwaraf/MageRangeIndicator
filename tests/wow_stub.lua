@@ -45,6 +45,7 @@ function Stub.Reset()
     Stub.talents = {}         -- legacy: [tab] = { { name, rank }, ... }
     Stub.class = "MAGE"
     Stub.race = "Human"
+    Stub.shift = false
     Stub.legacyRanges = {}    -- legacy client truth: [lower name] = yards
     Stub.pendingItemRequests = {}
     Stub.slash = {}
@@ -102,6 +103,7 @@ function Widget:SetClampedToScreen(value) self.clamped = value end
 function Widget:SetMovable(value) self.movable = value end
 function Widget:EnableMouse(value) self.mouse = value end
 function Widget:RegisterForDrag(...) self.drag = { ... } end
+function Widget:RegisterForClicks(...) self.clicks = { ... } end
 function Widget:StartMoving() self.moving = true end
 function Widget:StopMovingOrSizing() self.moving = false end
 function Widget:SetScript(name, fn) self.scripts[name] = fn end
@@ -175,6 +177,22 @@ function Stub.FlushTimers()
     local pending = Stub.timers
     Stub.timers = {}
     for _, fn in ipairs(pending) do fn() end
+end
+
+-- Press and release a mouse button on the icon, the way the client would.
+function Stub.ClickIcon(button)
+    local frame = Stub.FindFrame("MRIFrame")
+    if not frame then return false end
+    if frame.scripts.OnMouseDown then frame.scripts.OnMouseDown(frame, button) end
+    if frame.scripts.OnMouseUp then frame.scripts.OnMouseUp(frame, button) end
+    return true
+end
+
+function Stub.HoverIcon()
+    local frame = Stub.FindFrame("MRIFrame")
+    if not frame then return false end
+    if frame.scripts.OnEnter then frame.scripts.OnEnter(frame) end
+    return true
 end
 
 function Stub.RunSlash(command)
@@ -251,6 +269,7 @@ local function InstallShared(env)
     env.BOOKTYPE_SPELL = "spell"
 
     env.InCombatLockdown = function() return Stub.inCombat end
+    env.IsShiftKeyDown = function() return Stub.shift == true end
     env.UnitClass = function() return "Mage", Stub.class end
     env.UnitRace = function() return nil, Stub.race end
     env.UnitExists = function(unit)

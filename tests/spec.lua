@@ -402,6 +402,62 @@ local function testLegacyOverride()
     if entry then eq(entry.rangeText, "36", "auto hands the range back to the client") end
 end
 
+local function testMouseLock()
+    local ns = Boot(Load("forever", ForeverMage))
+    if not ns then return end
+
+    local frame = Stub.FindFrame("MRIFrame")
+    check(frame ~= nil, "the icon exists for the mouse shortcuts")
+
+    -- Right-click locks it.
+    Stub.shift = false
+    check(Stub.ClickIcon("RightButton"), "right-click reaches the icon")
+    eq(ns.db.locked, true, "right-click locks the icon")
+    check(Stub.ChatContains("Frame LOCKED"), "locking by mouse is confirmed in chat")
+    check(frame.mouse ~= false, "the mouse stays enabled while locked so it can be unlocked again")
+    check(frame.movable == false, "the locked icon cannot be dragged")
+
+    -- Right-click again while locked changes nothing.
+    Stub.ClickIcon("RightButton")
+    eq(ns.db.locked, true, "right-click while already locked is a no-op")
+
+    -- Shift right-click unlocks it.
+    Stub.shift = true
+    Stub.ClickIcon("RightButton")
+    eq(ns.db.locked, false, "shift right-click unlocks the icon")
+    check(Stub.ChatContains("Frame UNLOCKED"), "unlocking by mouse is confirmed in chat")
+    check(frame.movable == true, "the unlocked icon can be dragged again")
+
+    -- Plain right-click after unlocking locks it again (not a toggle hijacked
+    -- by a stuck shift key).
+    Stub.shift = false
+    Stub.ClickIcon("RightButton")
+    eq(ns.db.locked, true, "right-click still locks after an unlock")
+
+    -- The tooltip says how to get out of each state.
+    Stub.HoverIcon()
+    check(Stub.ChatContains ~= nil, "tooltip hover runs")
+    local tooltip = _G.GameTooltip
+    check(tooltip ~= nil and tooltip.lines ~= nil, "the tooltip was filled")
+    local lockedHint = false
+    for _, line in ipairs(tooltip.lines or {}) do
+        if type(line) == "string" and line:find("shift right-click to unlock", 1, true) then lockedHint = true end
+    end
+    check(lockedHint, "the locked tooltip explains the unlock shortcut")
+
+    Stub.shift = true
+    Stub.ClickIcon("RightButton")
+    Stub.HoverIcon()
+    local unlockedHint = false
+    for _, line in ipairs(tooltip.lines or {}) do
+        if type(line) == "string" and line:find("Right-click to lock", 1, true) then unlockedHint = true end
+    end
+    check(unlockedHint, "the unlocked tooltip explains the lock shortcut")
+
+    -- Left-drag still only moves while unlocked.
+    eq(frame.movable, true, "unlocked again at the end of the mouse checks")
+end
+
 local function testCommands()
     local ns = Boot(Load("forever", ForeverMage))
     if not ns then return end
@@ -463,6 +519,7 @@ testClientNumbersWin()
 testAutoDiscovery()
 testItemBuckets()
 testItemLoading()
+testMouseLock()
 testLegacyTalentMaths()
 testLegacyOverride()
 testCommands()
