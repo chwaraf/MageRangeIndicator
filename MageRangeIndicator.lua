@@ -1187,11 +1187,17 @@ local function CreateUI()
         glowTex:SetAlpha(pulse)
     end)
 
-    -- Right-click locks the icon in place, shift right-click unlocks it again.
+    -- Each shortcut only exists in the state it belongs to: right-click locks,
+    -- and only while the icon is unlocked; shift right-click unlocks, and only
+    -- while it is locked. Anything else is ignored silently.
     mainFrame:RegisterForClicks("AnyUp")
     mainFrame:SetScript("OnMouseUp", function(_, button)
-        if button ~= "RightButton" then return end
-        SetLocked(not ShiftHeld())
+        if button ~= "RightButton" or not db then return end
+        if db.locked then
+            if ShiftHeld() then SetLocked(false) end
+        elseif not ShiftHeld() then
+            SetLocked(true)
+        end
     end)
 
     mainFrame:SetScript("OnDragStart", function(self)
