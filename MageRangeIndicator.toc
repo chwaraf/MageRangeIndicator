@@ -1,8 +1,8 @@
 ## Interface: 20504
 ## Title: Mage Range Indicator
-## Notes: Shows shortest range mage spell in range - spec aware - optimized
+## Notes: Shows the shortest-range Mage spell that can still reach your target. Classic-era clients (Classic Era / TBC); WoW: Forever loads MageRangeIndicator_Camelot.toc.
 ## Author: MRI
-## Version: 6.0.0
+## Version: 6.1.0
 ## SavedVariables: MageRangeIndicatorDB
 
 MageRangeIndicator.lua
