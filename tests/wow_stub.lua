@@ -205,19 +205,27 @@ function Stub.FlushTimers()
 end
 
 -- Press and release a mouse button on the icon, the way the client would.
+-- A frame with the mouse disabled never receives it - that is the whole point
+-- of going click-through while locked, so the stub has to model it.
 function Stub.ClickIcon(button)
     local frame = Stub.FindFrame("MRIFrame")
-    if not frame then return false end
+    if not frame or frame.mouse == false then return false end
     if frame.scripts.OnMouseDown then frame.scripts.OnMouseDown(frame, button) end
     if frame.scripts.OnMouseUp then frame.scripts.OnMouseUp(frame, button) end
     return true
 end
 
+-- Hovering is a mouse event too: a click-through frame gets no tooltip.
 function Stub.HoverIcon()
     local frame = Stub.FindFrame("MRIFrame")
-    if not frame then return false end
+    if not frame or frame.mouse == false then return false end
     if frame.scripts.OnEnter then frame.scripts.OnEnter(frame) end
     return true
+end
+
+function Stub.IconTakesMouse()
+    local frame = Stub.FindFrame("MRIFrame")
+    return frame ~= nil and frame.mouse ~= false
 end
 
 function Stub.RunSlash(command)

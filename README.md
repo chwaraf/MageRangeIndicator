@@ -70,11 +70,11 @@ compartment through the TOC (`AddonCompartmentFunc`) and the click toggles the
 indicator.
 
 **Locking from the icon itself.** While the frame is unlocked you can drag it,
-and right-clicking the icon locks it in place. Once locked, shift right-clicking
-is the way back out; a plain right-click then does nothing. Each shortcut exists
-only in the state it belongs to, the mouse stays enabled while locked so the
-unlock shortcut is always reachable, and the tooltip shows the shortcut that
-applies right now.
+and right-clicking the icon locks it in place. A locked icon is
+**click-through**: it takes no mouse at all, so clicks pass to whatever is
+behind it and the icon never gets in the way in combat. Unlocking is done from
+the chat command, `/mri lock`, which the lock message, the login message and the
+tooltip all name.
 
 ## Memory
 
@@ -119,9 +119,8 @@ the counters say which path it took.
 | Command | What it does |
 | --- | --- |
 | `/mri` or `/mri help` | List the commands |
-| Right-click the icon (unlocked) | Lock the frame in place |
-| Shift right-click the icon (locked) | Unlock the frame so it can be dragged |
-| `/mri lock` | Toggle lock/unlock (same as the mouse shortcuts) |
+| Right-click the icon (unlocked) | Lock the frame in place, and make it click-through |
+| `/mri lock` | Unlock it again (or lock it from chat) |
 | `/mri size <16-128>` | Icon size |
 | `/mri opacity <0.0-1.0>` | Transparency |
 | `/mri show` / `/mri hide` | Show or hide the indicator |
@@ -173,6 +172,8 @@ all. Two rules came out of it, and the spec enforces both:
 
 * the state (`ApplyLock`, `ShowIdle`) is applied *before* the optional script
   wiring, so a failure can never leave a half-styled icon;
+* the spec's stub models the mouse the way the client does, so a click-through
+  frame really does receive no clicks or hovers in the tests;
 * every optional call is guarded and counted, and `/mri probe` reports
   `Wiring failures` instead of staying quiet.
 

@@ -1166,13 +1166,16 @@ end
 local function ApplyLock()
     if not mainFrame or not db then return end
     mainFrame:SetMovable(not db.locked)
-    -- The mouse stays enabled while locked: right-click has to be able to lock
-    -- and unlock the icon, so the frame cannot stop listening for it.
-    mainFrame:EnableMouse(true)
     if db.locked then
+        -- Non-interactive while locked: the icon stops taking the mouse
+        -- altogether, so clicks pass through to whatever is behind it. That
+        -- also means no tooltip and no mouse shortcut; the way back is
+        -- /mri lock, which the lock message and the login message both say.
+        mainFrame:EnableMouse(false)
         if glowTex then glowTex:Hide() end
         if dragLabel then dragLabel:Hide() end
     else
+        mainFrame:EnableMouse(true)
         mainFrame:RegisterForDrag("LeftButton")
         if glowTex then glowTex:Show() end
         if dragLabel then dragLabel:Show() end
@@ -1193,9 +1196,9 @@ local function SetLocked(locked)
     db.locked = locked
     ApplyLock()
     if locked then
-        Print("Frame LOCKED. Shift right-click the icon (or /mri lock) to unlock.")
+        Print("Frame LOCKED - it no longer takes the mouse. /mri lock to unlock.")
     else
-        Print("Frame UNLOCKED. Drag to move, right-click to lock.")
+        Print("Frame UNLOCKED. Right-click the icon to lock it, drag to move.")
     end
 end
 
@@ -1327,19 +1330,16 @@ local function CreateUI()
     ApplyLock()
     ShowIdle()
 
-    -- Each shortcut only exists in the state it belongs to: right-click locks,
-    -- and only while the icon is unlocked; shift right-click unlocks, and only
-    -- while it is locked. Anything else is ignored silently.
+    -- Right-click locks the icon. There is no mouse shortcut for unlocking:
+    -- a locked icon is click-through and takes no mouse at all, so /mri lock is
+    -- the way back.
     if type(mainFrame.RegisterForClicks) == "function" then
         TryCall("RegisterForClicks", mainFrame.RegisterForClicks, mainFrame, "AnyUp")
     end
     SafeScript(mainFrame, "OnMouseUp", function(_, button)
-        if button ~= "RightButton" or not db then return end
-        if db.locked then
-            if ShiftHeld() then SetLocked(false) end
-        elseif not ShiftHeld() then
-            SetLocked(true)
-        end
+        if button ~= "RightButton" or not db or db.locked then return end
+        if ShiftHeld() then return end
+        SetLocked(true)
     end)
 
     SafeScript(mainFrame, "OnDragStart", function(self)
@@ -1360,12 +1360,6 @@ local function CreateUI()
         GameTooltip:ClearLines()
         GameTooltip:AddLine("Mage Range Indicator", 0, 0.8, 1)
         GameTooltip:AddLine(client.flavor .. "  |cFF808080interface " .. client.iface .. "|r", 0.7, 0.7, 0.7)
-        if db and db.locked then
-            GameTooltip:AddLine(" ")
-            GameTooltip:AddLine("Locked - shift right-click to unlock", 0, 1, 0)
-            GameTooltip:Show()
-            return
-        end
         if #spells == 0 then
             GameTooltip:AddLine("No spells resolved yet.", 1, 0.5, 0.5)
         else
@@ -1377,7 +1371,8 @@ local function CreateUI()
             end
         end
         GameTooltip:AddLine(" ")
-        GameTooltip:AddLine("Right-click to lock  |  drag to move", 0, 1, 0.5)
+        GameTooltip:AddLine("Right-click to lock (the icon then takes no mouse)", 0, 1, 0.5)
+        GameTooltip:AddLine("Drag to move  |  /mri lock to unlock", 0, 1, 0)
         GameTooltip:AddLine("/mri help  /mri status  /mri probe", 0, 1, 0)
         GameTooltip:Show()
     end)
@@ -1863,7 +1858,11 @@ local function InitOnce()
 
     Print("v" .. ADDON_VERSION .. " on " .. client.flavor .. " (interface " .. client.iface
         .. ", client " .. client.version .. ").")
-    if not db.locked then Print("Frame UNLOCKED. Drag it, then /mri lock.") end
+    if db.locked then
+        Print("Frame is LOCKED (click-through). /mri lock to move it.")
+    else
+        Print("Frame UNLOCKED. Drag it, then right-click it or /mri lock.")
+    end
     Print("/mri help for commands, /mri probe for what this client supports.")
 end
 

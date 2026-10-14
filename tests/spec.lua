@@ -417,6 +417,7 @@ local function testMouseLock()
 
     local frame = Stub.FindFrame("MRIFrame")
     check(frame ~= nil, "the icon exists for the mouse shortcuts")
+    if not frame then return end
 
     local function tooltipLines()
         Stub.HoverIcon()
@@ -428,69 +429,73 @@ local function testMouseLock()
         end
         return false
     end
-    local function chatCount()
-        return #Stub.chat
-    end
+    local function chatCount() return #Stub.chat end
 
     local dragHint = frame.fontStrings[3]
 
     ---------------------------------------------------------------------
-    -- Unlocked: the right-click -> lock option exists.
+    -- Unlocked: draggable, interactive, and right-click locks it.
     ---------------------------------------------------------------------
     eq(ns.db.locked, false, "starts unlocked")
+    check(Stub.IconTakesMouse(), "an unlocked icon takes the mouse")
     check(dragHint and dragHint:IsShown(), "the drag hint is shown while unlocked")
-    check(not tooltipHas("shift right-click"), "no unlock hint while the icon is unlocked")
+    check(tooltipHas("Right-click to lock"), "the unlocked tooltip advertises the lock option")
 
-    -- While unlocked, shift right-click is not an unlock command.
+    -- Shift right-click is not a lock shortcut, so it is ignored.
     Stub.shift = true
+    local before = chatCount()
     Stub.ClickIcon("RightButton")
-    eq(ns.db.locked, false, "shift right-click while unlocked does nothing")
+    eq(ns.db.locked, false, "shift right-click does not lock")
+    eq(chatCount(), before, "shift right-click says nothing")
 
     Stub.shift = false
     check(Stub.ClickIcon("RightButton"), "right-click reaches the icon")
     eq(ns.db.locked, true, "right-click locks the icon")
     check(Stub.ChatContains("Frame LOCKED"), "locking by mouse is confirmed in chat")
-    check(frame.mouse ~= false, "the mouse stays enabled while locked so it can be unlocked again")
-    check(frame.movable == false, "the locked icon cannot be dragged")
 
     ---------------------------------------------------------------------
-    -- Locked: the lock option is gone, shift right-click is the way out.
+    -- Locked: click-through. No mouse, no tooltip, no shortcuts at all.
     ---------------------------------------------------------------------
+    eq(frame.mouse, false, "a locked icon takes no mouse at all")
+    check(not Stub.IconTakesMouse(), "the icon is click-through while locked")
+    check(frame.movable == false, "a locked icon cannot be dragged")
     check(not dragHint:IsShown(), "the drag hint is hidden while locked")
-    local before = chatCount()
-    Stub.ClickIcon("RightButton")
-    eq(ns.db.locked, true, "right-click while locked is a no-op")
-    eq(chatCount(), before, "a locked right-click says nothing at all")
-    check(not tooltipHas("Right-click to lock"), "the lock option is not advertised while locked")
-    check(tooltipHas("shift right-click to unlock"), "the locked tooltip explains the unlock shortcut")
 
-    Stub.shift = true
-    Stub.ClickIcon("RightButton")
-    eq(ns.db.locked, false, "shift right-click unlocks the icon")
-    check(Stub.ChatContains("Frame UNLOCKED"), "unlocking by mouse is confirmed in chat")
-    check(frame.movable == true, "the unlocked icon can be dragged again")
+    before = chatCount()
+    for _, button in ipairs({ "RightButton", "LeftButton" }) do
+        check(not Stub.ClickIcon(button), "a click on a locked icon (" .. button .. ") is not received")
+    end
+    check(not Stub.HoverIcon(), "hovering a locked icon is not received either")
+    eq(ns.db.locked, true, "clicks on a locked icon change nothing")
+    eq(chatCount(), before, "clicks on a locked icon say nothing")
+
+    -- The lock message has to name the way out, since no mouse shortcut exists.
+    for _, line in ipairs(Stub.chat) do
+        if line:find("Frame LOCKED", 1, true) then
+            check(line:find("/mri lock to unlock", 1, true) ~= nil,
+                "the lock message says how to unlock", line)
+        end
+    end
+
+    ---------------------------------------------------------------------
+    -- /mri lock is the way back.
+    ---------------------------------------------------------------------
+    Stub.RunSlash("lock")
+    eq(ns.db.locked, false, "/mri lock unlocks the icon")
+    check(Stub.ChatContains("Frame UNLOCKED"), "unlocking is confirmed in chat")
+    check(Stub.IconTakesMouse(), "the icon takes the mouse again")
+    check(frame.movable == true, "the unlocked icon can be dragged")
     check(dragHint:IsShown(), "the drag hint comes back when unlocked")
+    check(tooltipHas("Right-click to lock"), "the lock option is advertised again")
 
     ---------------------------------------------------------------------
-    -- The option is back, and the tooltip advertises it again.
+    -- And right-click locks it once more.
     ---------------------------------------------------------------------
-    check(tooltipHas("Right-click to lock"), "the unlocked tooltip explains the lock shortcut")
-    check(not tooltipHas("shift right-click"), "no unlock hint once unlocked again")
-
     Stub.shift = false
     Stub.ClickIcon("RightButton")
-    eq(ns.db.locked, true, "right-click still locks after an unlock (shift is not sticky)")
-
-    Stub.shift = true
-    Stub.ClickIcon("RightButton")
-    eq(ns.db.locked, false, "and unlocks again, ending unlocked")
+    eq(ns.db.locked, true, "right-click locks it again after an unlock")
+    eq(frame.mouse, false, "and it is click-through again")
 end
-
--- ---------------------------------------------------------------------
--- Churn: the addon used to re-request spell data from inside the rebuild
--- that each request triggered, and to rebuild the whole spell list on every
--- client event. These checks pin the fix down.
--- ---------------------------------------------------------------------
 
 local function testUpdateLoopChurn()
     local ns = Boot(Load("forever", ForeverMage))
@@ -633,17 +638,20 @@ local function testBootWhileLocked()
     end
     check(glow == nil or not glow:IsShown(), "a locked icon does not show the glow at login")
     check(frame.movable == false, "a locked icon is not movable")
-    check(frame.mouse ~= false, "a locked icon still accepts the mouse, so it can be unlocked")
+    eq(frame.mouse, false, "a locked icon takes no mouse at login")
+    check(not Stub.HoverIcon(), "no tooltip while locked")
 
     -- It is still live: the range readout works while locked.
     Stub.distance = 25
     Update()
     eq(select(1, Display()), "Scorch", "a locked icon still reads the range")
 
-    -- And the way out works.
-    Stub.shift = true
-    Stub.ClickIcon("RightButton")
-    eq(ns.db.locked, false, "shift right-click unlocks it from the saved locked state")
+    -- The way out is /mri lock, and the login message says so.
+    check(Stub.ChatContains("Frame is LOCKED"), "the locked state is reported at login")
+    check(Stub.ChatContains("/mri lock to move it"), "the login message says how to unlock")
+    Stub.RunSlash("lock")
+    eq(ns.db.locked, false, "/mri lock unlocks it from the saved locked state")
+    check(Stub.IconTakesMouse(), "the icon becomes interactive again")
 end
 
 local function testWiringFailureTolerance()
