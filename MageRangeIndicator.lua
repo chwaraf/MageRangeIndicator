@@ -1564,7 +1564,7 @@ local function HandleCommand(message)
 
     if command == "" or command == "help" then
         Print("/mri lock - toggle lock/unlock")
-        Print("Right-click the icon to lock it, shift right-click to unlock it")
+        Print("Right-click the icon to lock it (click-through), /mri lock to unlock")
         Print("/mri size <16-128> - icon size")
         Print("/mri opacity <0.0-1.0> - transparency")
         Print("/mri reset - settings back to defaults")
@@ -1856,14 +1856,14 @@ local function InitOnce()
     local updater = CreateFrame("Frame")
     updater:SetScript("OnUpdate", DoUpdate)
 
-    Print("v" .. ADDON_VERSION .. " on " .. client.flavor .. " (interface " .. client.iface
-        .. ", client " .. client.version .. ").")
+    -- One line at login, and only the part of it you might act on. The client,
+    -- the build and the spell list all live in /mri status and /mri probe for
+    -- when they are wanted.
     if db.locked then
-        Print("Frame is LOCKED (click-through). /mri lock to move it.")
+        Print("v" .. ADDON_VERSION .. " ready - icon LOCKED (click-through), /mri lock to move it.")
     else
-        Print("Frame UNLOCKED. Drag it, then right-click it or /mri lock.")
+        Print("v" .. ADDON_VERSION .. " ready - drag the icon, right-click to lock it. /mri help")
     end
-    Print("/mri help for commands, /mri probe for what this client supports.")
 end
 
 ns.QueueInit = function()

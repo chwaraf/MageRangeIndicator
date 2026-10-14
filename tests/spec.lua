@@ -595,6 +595,26 @@ end
 -- shipped in a4e2605 and was reported from the beta.
 -- ---------------------------------------------------------------------
 
+local function testLoginIsOneLine()
+    local ns = Boot(Load("forever", ForeverMage))
+    check(ns ~= nil, "booted for the login-line check")
+    eq(#Stub.chat, 1, "an unlocked mage gets exactly one line at login")
+    check(Stub.chat[1] and Stub.chat[1]:find("ready", 1, true) ~= nil,
+        "and it is the ready line", Stub.chat[1])
+    check(not Stub.ChatContains("interface 16001"), "the client details are not printed at login")
+
+    local locked = Boot(Load("forever", function()
+        ForeverMage()
+        MageRangeIndicatorDB = { locked = true, iconSize = 52, opacity = 1, posX = 299, posY = 84 }
+    end))
+    check(locked ~= nil, "booted locked for the login-line check")
+    eq(#Stub.chat, 1, "a locked mage gets exactly one line at login")
+
+    -- Commands still give their output when asked for it.
+    Stub.RunSlash("status")
+    check(#Stub.chat > 1, "asking for status does print")
+end
+
 local function testIconWiring()
     local ns = Boot(Load("forever", ForeverMage))
     if not ns then return end
@@ -647,7 +667,7 @@ local function testBootWhileLocked()
     eq(select(1, Display()), "Scorch", "a locked icon still reads the range")
 
     -- The way out is /mri lock, and the login message says so.
-    check(Stub.ChatContains("Frame is LOCKED"), "the locked state is reported at login")
+    check(Stub.ChatContains("icon LOCKED"), "the locked state is reported at login")
     check(Stub.ChatContains("/mri lock to move it"), "the login message says how to unlock")
     Stub.RunSlash("lock")
     eq(ns.db.locked, false, "/mri lock unlocks it from the saved locked state")
@@ -767,6 +787,7 @@ runTest(testUpdateLoopChurn, "testUpdateLoopChurn")
 runTest(testEventStorms, "testEventStorms")
 runTest(testRequestBudget, "testRequestBudget")
 runTest(testMouseLock, "testMouseLock")
+runTest(testLoginIsOneLine, "testLoginIsOneLine")
 runTest(testIconWiring, "testIconWiring")
 runTest(testBootWhileLocked, "testBootWhileLocked")
 runTest(testWiringFailureTolerance, "testWiringFailureTolerance")

@@ -69,6 +69,14 @@ coalesced rebuild rather than scheduling its own.
 compartment through the TOC (`AddonCompartmentFunc`) and the click toggles the
 indicator.
 
+**One line at login, and nothing else.** The client, the build and the spell
+list moved into `/mri status` and `/mri probe`, which print when asked:
+
+```
+MageRangeIndicator: v6.1.0 ready - drag the icon, right-click to lock it. /mri help
+MageRangeIndicator: v6.1.0 ready - icon LOCKED (click-through), /mri lock to move it.
+```
+
 **Locking from the icon itself.** While the frame is unlocked you can drag it,
 and right-clicking the icon locks it in place. A locked icon is
 **click-through**: it takes no mouse at all, so clicks pass to whatever is
