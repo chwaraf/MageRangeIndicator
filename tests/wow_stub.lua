@@ -48,6 +48,8 @@ function Stub.Reset()
     Stub.class = "MAGE"
     Stub.race = "Human"
     Stub.shift = false
+    Stub.breakRegisterForClicks = false
+    Stub.failCreateFrameFor = nil
     Stub.legacyRanges = {}    -- legacy client truth: [lower name] = yards
     Stub.pendingItemRequests = {}
     Stub.slash = {}
@@ -80,6 +82,15 @@ end
 local Widget = {}
 Widget.__index = Widget
 
+-- Button-only, exactly like the client. Stub.breakRegisterForClicks makes even
+-- the Button reject it, to check that one unsupported call cannot abort the UI.
+local function ButtonRegisterForClicks(self, ...)
+    if Stub.breakRegisterForClicks then
+        error("Button:RegisterForClicks is not available on this build")
+    end
+    self.clicks = { ... }
+end
+
 local function NewWidget(kind, parent)
     local widget = setmetatable({
         kind = kind,
@@ -92,6 +103,7 @@ local function NewWidget(kind, parent)
         width = 0,
         height = 0,
     }, Widget)
+    if kind == "Button" then widget.RegisterForClicks = ButtonRegisterForClicks end
     Stub.frames[#Stub.frames + 1] = widget
     if parent and parent.children then parent.children[#parent.children + 1] = widget end
     return widget
@@ -117,7 +129,6 @@ function Widget:SetClampedToScreen(value) self.clamped = value end
 function Widget:SetMovable(value) self.movable = value end
 function Widget:EnableMouse(value) self.mouse = value end
 function Widget:RegisterForDrag(...) self.drag = { ... } end
-function Widget:RegisterForClicks(...) self.clicks = { ... } end
 function Widget:StartMoving() self.moving = true end
 function Widget:StopMovingOrSizing() self.moving = false end
 function Widget:SetScript(name, fn) self.scripts[name] = fn end
@@ -254,6 +265,9 @@ local function InstallShared(env)
     env.print = env.print
 
     env.CreateFrame = function(kind, name, parent)
+        if Stub.failCreateFrameFor and (kind or "Frame") == Stub.failCreateFrameFor then
+            error("CreateFrame(" .. tostring(kind) .. ") is refused on this build")
+        end
         local frame = NewWidget(kind or "Frame", parent)
         frame.name = name
         if name then _G[name] = frame end
@@ -464,6 +478,9 @@ local function InstallLegacyClient(env)
         return talent.name, 134400, 1, 1, talent.rank or 0, talent.max or 2
     end
 end
+
+-- A CreateFrame that fails for one kind, to check the addon survives it.
+Stub.failCreateFrameFor = nil
 
 function Stub.Install(mode)
     mode = mode or "forever"

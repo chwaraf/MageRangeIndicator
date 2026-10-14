@@ -164,6 +164,19 @@ Retest on your build, in the order that matters:
 
 ## Development
 
+**The icon is a `Button`, not a `Frame`.** `RegisterForClicks` is a Button
+method; on a plain Frame it is nil, and the call threw `attempt to call a nil
+value` (Lua 5.1 does not name the method in the message the client shows). That
+throw aborted the whole UI build, leaving the icon on its fallback texture with
+the drag hint showing while the saved state said locked, and no mouse wiring at
+all. Two rules came out of it, and the spec enforces both:
+
+* the state (`ApplyLock`, `ShowIdle`) is applied *before* the optional script
+  wiring, so a failure can never leave a half-styled icon;
+* every optional call is guarded and counted, and `/mri probe` reports
+  `Wiring failures` instead of staying quiet.
+
+
 `MageRangeIndicator.lua` is one file, split into numbered sections: secrets and
 plain-value helpers, client detection, spell tables, spellbook, distance
 buckets, range resolution, range checks, spell list, UI, commands, events,

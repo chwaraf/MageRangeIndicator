@@ -22,6 +22,15 @@ local function check(condition, label, detail)
     end
 end
 
+-- A test that raises is a failure like any other, and the rest still run: a
+-- build that breaks early should still produce the whole report.
+local function runTest(fn, name)
+    local ok, err = pcall(fn)
+    if not ok then
+        failures[#failures + 1] = name .. " raised: " .. tostring(err)
+    end
+end
+
 local function eq(actual, expected, label)
     check(actual == expected, label, "got " .. tostring(actual) .. ", want " .. tostring(expected))
 end
@@ -32,8 +41,8 @@ end
 
 local function Load(mode, setup)
     Stub.Reset()
-    setup()
     Stub.Install(mode)
+    if setup then setup() end
 
     local chunk, loadError = loadfile(REPO .. "/MageRangeIndicator.lua")
     check(chunk ~= nil, "addon file compiles", loadError)
@@ -575,6 +584,116 @@ local function testRequestBudget()
     eq(ns.stats.requests, requests, "repeated rescans never re-request spell data")
 end
 
+-- ---------------------------------------------------------------------
+-- The icon widget itself: RegisterForClicks is a Button method, and a single
+-- unsupported call must not leave the icon half-built. This is the bug that
+-- shipped in a4e2605 and was reported from the beta.
+-- ---------------------------------------------------------------------
+
+local function testIconWiring()
+    local ns = Boot(Load("forever", ForeverMage))
+    if not ns then return end
+
+    local frame = Stub.FindFrame("MRIFrame")
+    check(frame ~= nil, "the icon frame exists")
+    if not frame then return end
+
+    eq(frame.kind, "Button", "the icon is a Button, because RegisterForClicks is a Button method")
+    check(frame.clicks ~= nil, "the click registration was accepted")
+    check(frame.scripts.OnMouseUp ~= nil, "the mouse-up script is wired")
+    check(frame.scripts.OnDragStart ~= nil, "the drag-start script is wired")
+    check(frame.scripts.OnDragStop ~= nil, "the drag-stop script is wired")
+    check(frame.scripts.OnEnter ~= nil, "the tooltip script is wired")
+    check(ns.stats.wiringFailures == 0, "nothing failed to wire on a normal client", ns.stats.wiringFailures)
+end
+
+local function testBootWhileLocked()
+    -- The reported state: the saved variables say locked, and the icon is built
+    -- fresh at login. The visuals have to match the saved state immediately.
+    local ns = Boot(Load("forever", function()
+        ForeverMage()
+        MageRangeIndicatorDB = { locked = true, iconSize = 52, opacity = 1, posX = 299, posY = 84 }
+    end))
+    if not ns then return end
+
+    eq(ns.db.locked, true, "the saved locked state is loaded")
+    local frame = Stub.FindFrame("MRIFrame")
+    check(frame ~= nil, "the icon is built for a locked character")
+    if not frame then return end
+
+    local dragHint = frame.fontStrings[3]
+    check(not dragHint:IsShown(), "a locked icon does not show the drag hint at login")
+    local rangeText, nameText = frame.fontStrings[1]:GetText(), frame.fontStrings[2]:GetText()
+    check(type(rangeText) == "string" and rangeText ~= "", "the readout is populated (CreateUI ran to the end)", rangeText)
+    check(type(nameText) == "string" and nameText ~= "", "the spell label is populated", nameText)
+    check(frame.scripts.OnDragStart ~= nil, "the wiring ran past the saved locked state")
+    local glow
+    for _, widget in ipairs(frame.children) do
+        if widget.kind == "Texture" and widget.blend == "ADD" then glow = widget end
+    end
+    check(glow == nil or not glow:IsShown(), "a locked icon does not show the glow at login")
+    check(frame.movable == false, "a locked icon is not movable")
+    check(frame.mouse ~= false, "a locked icon still accepts the mouse, so it can be unlocked")
+
+    -- It is still live: the range readout works while locked.
+    Stub.distance = 25
+    Update()
+    eq(select(1, Display()), "Scorch", "a locked icon still reads the range")
+
+    -- And the way out works.
+    Stub.shift = true
+    Stub.ClickIcon("RightButton")
+    eq(ns.db.locked, false, "shift right-click unlocks it from the saved locked state")
+end
+
+local function testWiringFailureTolerance()
+    -- A client that refuses the click registration must still leave a working,
+    -- correctly-styled icon - not a half-built one stuck on the fallback icon.
+    local ns = Boot(Load("forever", function()
+        ForeverMage()
+        Stub.breakRegisterForClicks = true
+    end))
+    if not ns then return end
+
+    check(ns.stats.wiringFailures > 0, "the refusal is counted", ns.stats.wiringFailures)
+    Stub.RunSlash("probe")
+    check(Stub.ChatContains("Wiring failures"), "probe names the wiring failure instead of staying quiet")
+
+    local frame = Stub.FindFrame("MRIFrame")
+    check(frame ~= nil, "the icon is built even when the click registration is refused")
+    if frame then
+        check(frame.scripts.OnDragStart ~= nil, "dragging is still wired")
+        check(frame.scripts.OnEnter ~= nil, "the tooltip is still wired")
+        Stub.distance = 25
+        Update()
+        eq(select(1, Display()), "Scorch", "the icon still works without the click registration")
+    end
+end
+
+local function testIconRefused()
+    -- If the client refuses to build the icon at all, the addon must say so and
+    -- stay usable (commands, probing) instead of dying silently.
+    local ns = Load("forever", function()
+        ForeverMage()
+        Stub.failCreateFrameFor = "Button"
+    end)
+    if not ns then return end
+
+    local ok = pcall(function()
+        Stub.FireEvent("ADDON_LOADED", "MageRangeIndicator")
+        Stub.FireEvent("PLAYER_LOGIN")
+        Stub.FlushTimers()
+        Stub.Tick(0.5, 2)
+    end)
+    check(ok, "start-up survives a refused icon")
+    check(Stub.ChatContains("could not be built"), "the refusal is reported in chat")
+    eq(Stub.FindFrame("MRIFrame"), nil, "no half-built icon is left behind")
+
+    local probed = pcall(Stub.RunSlash, "probe")
+    check(probed, "commands still work without an icon")
+    check(Stub.ChatContains("Wiring failures"), "the probe names the failure")
+end
+
 local function testCommands()
     local ns = Boot(Load("forever", ForeverMage))
     if not ns then return end
@@ -628,22 +747,26 @@ end
 -- Run
 ---------------------------------------------------------------------------
 
-testForeverNearestSpell()
-testSpecPriorityTieBreak()
-testForeverStates()
-testSecrets()
-testClientNumbersWin()
-testAutoDiscovery()
-testItemBuckets()
-testItemLoading()
-testUpdateLoopChurn()
-testEventStorms()
-testRequestBudget()
-testMouseLock()
-testLegacyTalentMaths()
-testLegacyOverride()
-testCommands()
-testNonMage()
+runTest(testForeverNearestSpell, "testForeverNearestSpell")
+runTest(testSpecPriorityTieBreak, "testSpecPriorityTieBreak")
+runTest(testForeverStates, "testForeverStates")
+runTest(testSecrets, "testSecrets")
+runTest(testClientNumbersWin, "testClientNumbersWin")
+runTest(testAutoDiscovery, "testAutoDiscovery")
+runTest(testItemBuckets, "testItemBuckets")
+runTest(testItemLoading, "testItemLoading")
+runTest(testUpdateLoopChurn, "testUpdateLoopChurn")
+runTest(testEventStorms, "testEventStorms")
+runTest(testRequestBudget, "testRequestBudget")
+runTest(testMouseLock, "testMouseLock")
+runTest(testIconWiring, "testIconWiring")
+runTest(testBootWhileLocked, "testBootWhileLocked")
+runTest(testWiringFailureTolerance, "testWiringFailureTolerance")
+runTest(testIconRefused, "testIconRefused")
+runTest(testLegacyTalentMaths, "testLegacyTalentMaths")
+runTest(testLegacyOverride, "testLegacyOverride")
+runTest(testCommands, "testCommands")
+runTest(testNonMage, "testNonMage")
 
 if #failures > 0 then
     io.write("FAILED ", #failures, " of ", passed + #failures, " checks\n")

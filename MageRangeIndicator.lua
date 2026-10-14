@@ -156,7 +156,24 @@ local db    -- MageRangeIndicatorDB; filled at ADDON_LOADED, never at file scope
 -- Counters for /mri probe. They exist so a build can be checked for churn
 -- (rebuilds, spellbook scans, spell-data requests) without a profiler.
 local stats = { rebuilds = 0, bookScans = 0, requests = 0, tooltipReads = 0,
-                rebuildDelay = 0.75, lastRebuildAt = 0 }
+                rebuildDelay = 0.75, lastRebuildAt = 0, wiringFailures = 0 }
+
+-- This client is a beta that moves quickly, and one unsupported call must not
+-- cost the whole icon. Anything optional is wired through here, with failures
+-- counted so /mri probe can name them instead of staying quiet.
+local function TryCall(name, fn, ...)
+    local ok, err = pcall(fn, ...)
+    if not ok then
+        stats.wiringFailures = stats.wiringFailures + 1
+        ns.lastWiringError = name .. ": " .. tostring(err)
+    end
+    return ok
+end
+
+local function SafeScript(widget, event, handler)
+    if type(widget) ~= "table" or type(widget.SetScript) ~= "function" then return false end
+    return TryCall("SetScript(" .. event .. ")", widget.SetScript, widget, event, handler)
+end
 
 -- There are fewer wanted spell IDs than this; the cap is a seatbelt on the
 -- request path, so no future bug can turn it into a machine gun.
@@ -1233,7 +1250,12 @@ end
 local function CreateUI()
     if mainFrame or not db then return end
 
-    mainFrame = CreateFrame("Frame", "MRIFrame", UIParent)
+    -- A Button, not a Frame: RegisterForClicks is a Button method, and the
+    -- plain Frame version of this line threw "attempt to call a nil value"
+    -- (Lua 5.1 does not name the method), which aborted this whole function -
+    -- leaving the icon on its fallback texture, with the drag hint showing
+    -- while the saved state said locked, and no mouse wiring at all.
+    mainFrame = CreateFrame("Button", "MRIFrame", UIParent)
     mainFrame:SetSize(db.iconSize, db.iconSize)
     mainFrame:SetPoint("CENTER", UIParent, "CENTER", db.posX, db.posY)
     mainFrame:SetAlpha(db.opacity)
@@ -1300,11 +1322,18 @@ local function CreateUI()
         glowTex:SetAlpha(pulse)
     end)
 
+    -- The visuals and the saved state come first, so a wiring failure below
+    -- can never leave the icon showing the wrong thing again.
+    ApplyLock()
+    ShowIdle()
+
     -- Each shortcut only exists in the state it belongs to: right-click locks,
     -- and only while the icon is unlocked; shift right-click unlocks, and only
     -- while it is locked. Anything else is ignored silently.
-    mainFrame:RegisterForClicks("AnyUp")
-    mainFrame:SetScript("OnMouseUp", function(_, button)
+    if type(mainFrame.RegisterForClicks) == "function" then
+        TryCall("RegisterForClicks", mainFrame.RegisterForClicks, mainFrame, "AnyUp")
+    end
+    SafeScript(mainFrame, "OnMouseUp", function(_, button)
         if button ~= "RightButton" or not db then return end
         if db.locked then
             if ShiftHeld() then SetLocked(false) end
@@ -1313,10 +1342,10 @@ local function CreateUI()
         end
     end)
 
-    mainFrame:SetScript("OnDragStart", function(self)
+    SafeScript(mainFrame, "OnDragStart", function(self)
         if db and not db.locked then self:StartMoving() end
     end)
-    mainFrame:SetScript("OnDragStop", function(self)
+    SafeScript(mainFrame, "OnDragStop", function(self)
         self:StopMovingOrSizing()
         local _, _, _, x, y = self:GetPoint()
         x, y = PlainNum(x, nil), PlainNum(y, nil)
@@ -1325,7 +1354,7 @@ local function CreateUI()
         end
     end)
 
-    mainFrame:SetScript("OnEnter", function(self)
+    SafeScript(mainFrame, "OnEnter", function(self)
         if type(GameTooltip) ~= "table" then return end
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
         GameTooltip:ClearLines()
@@ -1352,12 +1381,9 @@ local function CreateUI()
         GameTooltip:AddLine("/mri help  /mri status  /mri probe", 0, 1, 0)
         GameTooltip:Show()
     end)
-    mainFrame:SetScript("OnLeave", function()
+    SafeScript(mainFrame, "OnLeave", function()
         if type(GameTooltip) == "table" then GameTooltip:Hide() end
     end)
-
-    ApplyLock()
-    ShowIdle()
 end
 
 ---------------------------------------------------------------------------
@@ -1476,6 +1502,9 @@ local function ReportProbe()
         buckets[#buckets + 1] = bucket.yards .. (bucket.item and "*" or "")
     end
     Print("Distance buckets: " .. (#buckets > 0 and table.concat(buckets, " ") or "none") .. "   (* item check)")
+    if stats.wiringFailures > 0 then
+        Print("Wiring failures: " .. stats.wiringFailures .. "  last: " .. tostring(ns.lastWiringError))
+    end
     for _, entry in ipairs(skipped) do
         Print("  skipped: " .. entry.name .. " (id " .. tostring(entry.id) .. ") - " .. entry.why)
     end
@@ -1820,8 +1849,14 @@ local function InitOnce()
     DetectPrimaryTree()
     InvalidateRanges()
     BuildSpellList()
-    CreateUI()
-    if mainFrame then mainFrame:Show() end
+    -- Nothing below may be allowed to die quietly on a beta client: if the
+    -- icon cannot be built, say so and keep the commands working.
+    TryCall("CreateUI", CreateUI)
+    if not mainFrame then
+        Print("The icon could not be built on this client. /mri probe for details.")
+        return
+    end
+    mainFrame:Show()
 
     local updater = CreateFrame("Frame")
     updater:SetScript("OnUpdate", DoUpdate)
