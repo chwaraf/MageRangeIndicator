@@ -69,6 +69,15 @@ coalesced rebuild rather than scheduling its own.
 compartment through the TOC (`AddonCompartmentFunc`) and the click toggles the
 indicator.
 
+**A locked icon never shows a tooltip.** Mouse input has two halves (clicks
+and motion) and this icon is a Button, which takes both by default;
+`EnableMouse(false)` alone is not enough on its own, so both flags are set
+explicitly when locking. A tooltip that is open *at the moment you lock* is
+cleared at that moment too, because a click-through frame never receives the
+`OnLeave` that would otherwise hide it — that is the one that used to come back
+after a reload or a loading screen. The hover handler also refuses to show
+anything while locked, so even a stray hover event cannot bring it back.
+
 **One line at login, and nothing else.** The client, the build and the spell
 list moved into `/mri status` and `/mri probe`, which print when asked:
 

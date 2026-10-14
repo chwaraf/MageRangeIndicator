@@ -1163,6 +1163,37 @@ local function ApplyOpacity()
     mainFrame:SetAlpha(db.opacity or 1.0)
 end
 
+-- Mouse input has two halves - clicks and motion - and this icon is a Button,
+-- which takes both by default. EnableMouse(false) is not enough on its own to
+-- stop hover events reaching a Button, so both flags are set explicitly: a
+-- locked icon must be genuinely click-through, tooltip included.
+local function SetMouseEnabled(enabled)
+    if not mainFrame then return end
+    mainFrame:EnableMouse(enabled)
+    if type(mainFrame.SetMouseMotionEnabled) == "function" then
+        TryCall("SetMouseMotionEnabled", mainFrame.SetMouseMotionEnabled, mainFrame, enabled)
+    end
+    if type(mainFrame.SetMouseClickEnabled) == "function" then
+        TryCall("SetMouseClickEnabled", mainFrame.SetMouseClickEnabled, mainFrame, enabled)
+    end
+end
+
+-- A tooltip that is up when the icon is locked can never be hidden by OnLeave,
+-- because a click-through frame no longer receives mouse events. Clear it at
+-- the moment of locking, and only when it is ours - never stomp another
+-- addon's tooltip.
+local function HideOwnedTooltip()
+    if type(GameTooltip) ~= "table" or type(GameTooltip.Hide) ~= "function" then return end
+    if type(GameTooltip.GetOwner) == "function" then
+        local ok, owner = pcall(GameTooltip.GetOwner, GameTooltip)
+        if ok and owner ~= mainFrame then return end
+    elseif type(mainFrame.IsMouseOver) == "function" then
+        local ok, over = pcall(mainFrame.IsMouseOver, mainFrame)
+        if not ok or over ~= true then return end
+    end
+    pcall(GameTooltip.Hide, GameTooltip)
+end
+
 local function ApplyLock()
     if not mainFrame or not db then return end
     mainFrame:SetMovable(not db.locked)
@@ -1171,11 +1202,12 @@ local function ApplyLock()
         -- altogether, so clicks pass through to whatever is behind it. That
         -- also means no tooltip and no mouse shortcut; the way back is
         -- /mri lock, which the lock message and the login message both say.
-        mainFrame:EnableMouse(false)
+        SetMouseEnabled(false)
+        HideOwnedTooltip()
         if glowTex then glowTex:Hide() end
         if dragLabel then dragLabel:Hide() end
     else
-        mainFrame:EnableMouse(true)
+        SetMouseEnabled(true)
         mainFrame:RegisterForDrag("LeftButton")
         if glowTex then glowTex:Show() end
         if dragLabel then dragLabel:Show() end
@@ -1355,6 +1387,9 @@ local function CreateUI()
     end)
 
     SafeScript(mainFrame, "OnEnter", function(self)
+        -- Belt and braces: whatever the client decides to dispatch, a locked
+        -- icon shows nothing.
+        if db and db.locked then return end
         if type(GameTooltip) ~= "table" then return end
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
         GameTooltip:ClearLines()

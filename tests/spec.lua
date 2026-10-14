@@ -615,6 +615,79 @@ local function testLoginIsOneLine()
     check(#Stub.chat > 1, "asking for status does print")
 end
 
+-- ---------------------------------------------------------------------
+-- The reported bug: the icon's tooltip came back while locked, after a reload
+-- or a loading screen.
+-- ---------------------------------------------------------------------
+
+local function testLockedTooltip()
+    local ns = Boot(Load("forever", ForeverMage))
+    if not ns then return end
+
+    local frame = Stub.FindFrame("MRIFrame")
+
+    -- Unlocked: hover shows the tooltip.
+    check(Stub.HoverIcon(), "hovering an unlocked icon is received")
+    check(Stub.TooltipShown(), "the unlocked tooltip is shown")
+    Stub.UnhoverIcon()
+    check(not Stub.TooltipShown(), "and hidden again on leave")
+
+    -- Lock it while the tooltip is up - the reported path, since the mouse is
+    -- over the icon when you right-click it.
+    Stub.HoverIcon()
+    check(Stub.TooltipShown(), "the tooltip is up before locking")
+    Stub.ClickIcon("RightButton")
+    eq(ns.db.locked, true, "right-click locks the icon")
+    check(not Stub.TooltipShown(), "locking takes the open tooltip off the screen")
+    check(frame.motion == false, "motion is disabled while locked, not just clicks")
+    check(frame.click == false, "clicks are disabled while locked")
+
+    -- A locked icon receives no mouse events at all.
+    check(not Stub.HoverIcon(), "a locked icon receives no hover")
+    check(not Stub.ClickIcon("RightButton"), "a locked icon receives no clicks")
+
+    -- Even if the client dispatches a hover anyway, the guard keeps it quiet.
+    check(Stub.FireIconScript("OnEnter"), "the script can be fired directly for the check")
+    check(not Stub.TooltipShown(), "a stray hover while locked shows no tooltip")
+
+    -- Unlocking brings it back, cleanly.
+    Stub.RunSlash("lock")
+    eq(ns.db.locked, false, "/mri lock unlocks")
+    check(Stub.HoverIcon(), "hover works again once unlocked")
+    check(Stub.TooltipShown(), "and the tooltip shows again")
+    Stub.UnhoverIcon()
+end
+
+local function testTooltipAcrossReload()
+    -- A character that logs in already locked, then zones: the reported
+    -- "/reload or screen load" path.
+    local ns = Boot(Load("forever", function()
+        ForeverMage()
+        MageRangeIndicatorDB = { locked = true, iconSize = 52, opacity = 1, posX = 299, posY = 84 }
+    end))
+    if not ns then return end
+
+    local frame = Stub.FindFrame("MRIFrame")
+    check(not Stub.TooltipShown(), "no tooltip after a locked login")
+    check(frame.motion == false and frame.click == false, "the icon is click-through after a locked login")
+
+    -- A loading screen.
+    Stub.FireEvent("PLAYER_ENTERING_WORLD")
+    Stub.Tick(0.5, 2)
+    check(not Stub.TooltipShown(), "still no tooltip after a loading screen")
+    check(frame.motion == false, "and still click-through")
+    check(Stub.FireIconScript("OnEnter"), "the hover script is still there")
+    check(not Stub.TooltipShown(), "and still refuses to show a tooltip while locked")
+
+    -- The drag hint stays gone across the same events.
+    check(not frame.fontStrings[3]:IsShown(), "the drag hint stays hidden across a loading screen")
+
+    -- And after unlocking, everything works as at any other time.
+    Stub.RunSlash("lock")
+    check(Stub.HoverIcon(), "hover is received after unlocking")
+    check(Stub.TooltipShown(), "the tooltip shows after unlocking")
+end
+
 local function testIconWiring()
     local ns = Boot(Load("forever", ForeverMage))
     if not ns then return end
@@ -788,6 +861,8 @@ runTest(testEventStorms, "testEventStorms")
 runTest(testRequestBudget, "testRequestBudget")
 runTest(testMouseLock, "testMouseLock")
 runTest(testLoginIsOneLine, "testLoginIsOneLine")
+runTest(testLockedTooltip, "testLockedTooltip")
+runTest(testTooltipAcrossReload, "testTooltipAcrossReload")
 runTest(testIconWiring, "testIconWiring")
 runTest(testBootWhileLocked, "testBootWhileLocked")
 runTest(testWiringFailureTolerance, "testWiringFailureTolerance")

@@ -102,6 +102,11 @@ local function NewWidget(kind, parent)
         shown = true,
         width = 0,
         height = 0,
+        -- A Button takes the mouse by default, a plain Frame does not. Motion
+        -- and click are separate flags, exactly as they are on the client.
+        mouse = (kind == "Button"),
+        motion = (kind == "Button"),
+        click = (kind == "Button"),
     }, Widget)
     if kind == "Button" then widget.RegisterForClicks = ButtonRegisterForClicks end
     Stub.frames[#Stub.frames + 1] = widget
@@ -127,7 +132,16 @@ function Widget:SetFrameStrata(strata) self.strata = strata end
 function Widget:SetFrameLevel(level) self.level = level end
 function Widget:SetClampedToScreen(value) self.clamped = value end
 function Widget:SetMovable(value) self.movable = value end
-function Widget:EnableMouse(value) self.mouse = value end
+function Widget:EnableMouse(value)
+    self.mouse = value
+    self.motion = value
+    self.click = value
+end
+function Widget:SetMouseMotionEnabled(value) self.motion = value end
+function Widget:SetMouseClickEnabled(value) self.click = value end
+function Widget:IsMouseMotionEnabled() return self.motion == true end
+function Widget:IsMouseClickEnabled() return self.click == true end
+function Widget:IsMouseOver() return self.hovered == true end
 function Widget:RegisterForDrag(...) self.drag = { ... } end
 function Widget:StartMoving() self.moving = true end
 function Widget:StopMovingOrSizing() self.moving = false end
@@ -154,7 +168,8 @@ function Widget:GetText() return self.text end
 function Widget:SetTextColor(...) self.textColor = { ... } end
 function Widget:SetShadowColor() end
 function Widget:SetShadowOffset() end
-function Widget:SetOwner() end
+function Widget:SetOwner(owner) self.owner = owner end
+function Widget:GetOwner() return self.owner end
 function Widget:ClearLines() self.lines = {} end
 function Widget:AddLine(text) self.lines = self.lines or {}; self.lines[#self.lines + 1] = text end
 function Widget:SetSpellByID(id) self.spellID = id end
@@ -205,22 +220,45 @@ function Stub.FlushTimers()
 end
 
 -- Press and release a mouse button on the icon, the way the client would.
--- A frame with the mouse disabled never receives it - that is the whole point
--- of going click-through while locked, so the stub has to model it.
+-- A frame with clicks disabled never receives it - that is the whole point of
+-- going click-through while locked, so the stub has to model it.
 function Stub.ClickIcon(button)
     local frame = Stub.FindFrame("MRIFrame")
-    if not frame or frame.mouse == false then return false end
+    if not frame or frame.click == false then return false end
     if frame.scripts.OnMouseDown then frame.scripts.OnMouseDown(frame, button) end
     if frame.scripts.OnMouseUp then frame.scripts.OnMouseUp(frame, button) end
     return true
 end
 
--- Hovering is a mouse event too: a click-through frame gets no tooltip.
+-- Hovering is a mouse event too, and it is motion that drives OnEnter: a frame
+-- with motion disabled gets no tooltip, even if it still took clicks.
 function Stub.HoverIcon()
     local frame = Stub.FindFrame("MRIFrame")
-    if not frame or frame.mouse == false then return false end
+    if not frame or frame.motion == false then return false end
+    frame.hovered = true
     if frame.scripts.OnEnter then frame.scripts.OnEnter(frame) end
     return true
+end
+
+function Stub.UnhoverIcon()
+    local frame = Stub.FindFrame("MRIFrame")
+    if not frame then return false end
+    frame.hovered = false
+    if frame.scripts.OnLeave then frame.scripts.OnLeave(frame) end
+    return true
+end
+
+-- Fire a script directly, whatever the mouse state: the way to test what the
+-- addon does if the client dispatches an event it should not have.
+function Stub.FireIconScript(name)
+    local frame = Stub.FindFrame("MRIFrame")
+    if not frame or not frame.scripts[name] then return false end
+    frame.scripts[name](frame)
+    return true
+end
+
+function Stub.TooltipShown()
+    return _G.GameTooltip ~= nil and _G.GameTooltip.shown == true
 end
 
 function Stub.IconTakesMouse()
@@ -336,6 +374,8 @@ local function InstallShared(env)
 
     env.GameTooltip = NewWidget("Frame")
     env.GameTooltip.lines = {}
+    -- The client's tooltip starts hidden; only an owner can show it.
+    env.GameTooltip:Hide()
 
     env.issecretvalue = function(value)
         return Stub.secretEnabled and value == Stub.secret or false
