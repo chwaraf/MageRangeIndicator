@@ -1,0 +1,14 @@
+## Interface: 16001
+## Title: Mage Range Indicator
+## Notes: Shows the shortest-range Mage spell that can still reach your target. Built for WoW: Forever (interface 16001, Camelot).
+## Author: MRI
+## Version: 6.1.0
+## SavedVariables: MageRangeIndicatorDB
+## Category: Combat
+## IconTexture: Interface\Icons\Spell_Arcane_PortalDalaran
+## AddonCompartmentFunc: MRI_OnCompartmentClick
+## AddonCompartmentFuncOnEnter: MRI_OnCompartmentEnter
+## AddonCompartmentFuncOnLeave: MRI_OnCompartmentLeave
+## X-Website: https://github.com/chwaraf/MageRangeIndicator
+
+MageRangeIndicator.lua
