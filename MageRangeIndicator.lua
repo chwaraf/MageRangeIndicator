@@ -153,7 +153,22 @@ local defaults = {
 
 local db    -- MageRangeIndicatorDB; filled at ADDON_LOADED, never at file scope
 
+-- Counters for /mri probe. They exist so a build can be checked for churn
+-- (rebuilds, spellbook scans, spell-data requests) without a profiler.
+local stats = { rebuilds = 0, bookScans = 0, requests = 0, tooltipReads = 0,
+                rebuildDelay = 0.75, lastRebuildAt = 0 }
+
+-- There are fewer wanted spell IDs than this; the cap is a seatbelt on the
+-- request path, so no future bug can turn it into a machine gun.
+local MAX_SPELL_REQUESTS = 64
+ns.stats = stats
+
 local SCHOOL_ARCANE, SCHOOL_FIRE, SCHOOL_FROST = 1, 2, 3
+local STATE_IN, STATE_OUT, STATE_UNKNOWN = "IN", "OUT", "UNKNOWN"
+local COLOR_DEAD     = { 0.6, 0.6, 0.6 }
+local COLOR_FRIENDLY = { 0.3, 0.8, 1 }
+local COLOR_UNKNOWN  = { 0.8, 0.6, 1 }
+local COLOR_OOR      = { 1, 0.3, 0.3 }
 local treeNames = { "Arcane", "Fire", "Frost" }
 local treePoints = { 0, 0, 0 }
 local primaryTree = SCHOOL_FIRE
@@ -231,6 +246,14 @@ local AOE_DATA = {
     { name = "Blast Wave",      id = 11113, radius = 10, adjust = -1, shape = "around", school = SCHOOL_FIRE,   range = 10 },
 }
 
+-- The spell IDs the tables above name. Only these are ever asked of the
+-- client, and never twice: an addon that re-requests data it will never get,
+-- once per rebuild, is an addon that eats memory a megabyte at a time.
+local wantedIDs = {}
+for _, data in ipairs(SPELL_DATA) do wantedIDs[data.id] = true end
+for _, data in ipairs(AOE_DATA) do wantedIDs[data.id] = true end
+ns.wantedIDs = wantedIDs
+
 ---------------------------------------------------------------------------
 -- 5. Spellbook
 --
@@ -252,27 +275,60 @@ local function SpellInfoTable(spell)
     return info
 end
 
-local function LocalizedName(spellID)
+-- Spell data is read once per ID and kept as plain fields: the client answers
+-- C_Spell.GetSpellInfo with a fresh table every call, and this runs for every
+-- candidate on every rebuild. A miss is remembered as `false` so the rebuild
+-- that follows a refused lookup stays free.
+local spellInfoCache = {}     -- [spellID] = { name, iconID, minRange, maxRange } or false
+local requestedSpells = {}    -- [spellID] = true once the client has been asked to load it
+
+local function SpellInfo(spellID)
     if not spellID then return nil end
+    local cached = spellInfoCache[spellID]
+    if cached ~= nil then
+        if cached == false then return nil end
+        return cached
+    end
+
     local info = SpellInfoTable(spellID)
-    if not info then
-        if client.modern and C_Spell and C_Spell.RequestLoadSpellData then
+    if info then
+        local name = PlainText(info.name, nil)
+        if name then
+            cached = {
+                name = name,
+                iconID = PlainNum(info.iconID, nil),
+                minRange = PlainNum(info.minRange, 0) or 0,
+                maxRange = PlainNum(info.maxRange, 0) or 0,
+            }
+            spellInfoCache[spellID] = cached
+            return cached
+        end
+    end
+
+    -- No record. Ask the client once per session, and only for a spell this
+    -- addon's tables care about. Never request from the rebuild path again:
+    -- each request would answer with SPELL_DATA_LOAD_RESULT, whose handler
+    -- rebuilds, which would request - a loop that allocates forever.
+    spellInfoCache[spellID] = false
+    if wantedIDs[spellID] and not requestedSpells[spellID] and stats.requests < MAX_SPELL_REQUESTS then
+        requestedSpells[spellID] = true
+        stats.requests = stats.requests + 1
+        if client.modern and C_Spell and type(C_Spell.RequestLoadSpellData) == "function" then
             pcall(C_Spell.RequestLoadSpellData, spellID)
         end
-        return nil
     end
-    return PlainText(info.name, nil)
+    return nil
+end
+
+local function LocalizedName(spellID)
+    local info = SpellInfo(spellID)
+    return info and info.name or nil
 end
 
 local function SpellIcon(spellID, fallbackName)
-    if spellID then
-        local info = SpellInfoTable(spellID)
-        if info then
-            local icon = PlainNum(info.iconID, nil)
-            if icon then return icon end
-        end
-    end
-    if fallbackName then
+    local info = SpellInfo(spellID)
+    if info and info.iconID then return info.iconID end
+    if fallbackName and type(GetSpellInfo) == "function" then
         local ok, _, _, icon = pcall(GetSpellInfo, fallbackName)
         if ok then return icon end
     end
@@ -283,10 +339,9 @@ end
 -- On Classic-era clients C_Spell does not exist, so this answers nil and the
 -- table (plus talent maths) is used instead.
 local function DataRange(spellID)
-    if not spellID then return nil, nil end
-    local info = SpellInfoTable(spellID)
+    local info = SpellInfo(spellID)
     if not info then return nil, nil end
-    return PlainNum(info.maxRange, nil), PlainNum(info.minRange, nil)
+    return info.maxRange > 0 and info.maxRange or nil, info.minRange > 0 and info.minRange or nil
 end
 
 -- Does the client consider this spell one with a target range? Self-centred
@@ -361,21 +416,27 @@ local function ScanLegacyBook()
     return byName, byID
 end
 
+local bookDirty = true
+
 local function Book()
-    if not book then
+    if not book or bookDirty then
         local byName, byID
+        stats.bookScans = stats.bookScans + 1
         if client.modern then
             byName, byID = ScanModernBook()
         else
             byName, byID = ScanLegacyBook()
         end
         book = { byName = byName, byID = byID }
+        bookDirty = false
     end
     return book
 end
 
+-- The spellbook only needs rescanning when the client says it changed, not on
+-- every range or talent refresh.
 local function InvalidateBook()
-    book = nil
+    bookDirty = true
 end
 
 -- The player's own entry for a spell: exact ID first, then the localised name
@@ -415,6 +476,8 @@ local INTERACT_BUCKETS = {
     { index = 1, yards = 28 },
 }
 local FOLLOW_INDEX, FOLLOW_YARDS = 4, 28
+
+local inCombatLockdown = false   -- kept by PLAYER_REGEN_DISABLED / _ENABLED
 
 local itemFor = {}          -- [yards] = an item of that use range whose data is loaded
 local itemPending = {}      -- [itemID] = yards, while its data loads
@@ -500,20 +563,39 @@ local function Buckets()
     return list
 end
 
+-- Asked once per update pass and remembered: several checks in one pass need
+-- the same answer, and each ask is a protected call.
+local attackableKnown, attackableValue = false, false
+
+local function ResetAttackable()
+    attackableKnown = false
+end
+
 local function AttackablePlain(unit)
-    if type(UnitCanAttack) ~= "function" then return false end
-    local ok, value = pcall(UnitCanAttack, "player", unit)
-    if not ok then return false end
-    local plain = PlainBool(value, nil)
-    if plain ~= nil then return plain end
-    -- Secret boolean: fall back to the faction test the Forever guides
-    -- recommend, which never carries a restriction.
-    if type(UnitFactionGroup) ~= "function" then return false end
-    local okMine, mine = pcall(UnitFactionGroup, "player")
-    local okTheirs, theirs = pcall(UnitFactionGroup, unit)
-    mine, theirs = PlainText(mine, nil), PlainText(theirs, nil)
-    if not okMine or not okTheirs or not mine or not theirs then return false end
-    return mine ~= theirs
+    if unit == "target" and attackableKnown then return attackableValue end
+
+    local result = false
+    if type(UnitCanAttack) == "function" then
+        local ok, value = pcall(UnitCanAttack, "player", unit)
+        if ok then
+            local plain = PlainBool(value, nil)
+            if plain ~= nil then
+                result = plain
+            elseif type(UnitFactionGroup) == "function" then
+                -- Secret boolean: fall back to the faction test the Forever
+                -- guides recommend, which never carries a restriction.
+                local okMine, mine = pcall(UnitFactionGroup, "player")
+                local okTheirs, theirs = pcall(UnitFactionGroup, unit)
+                mine, theirs = PlainText(mine, nil), PlainText(theirs, nil)
+                if okMine and okTheirs and mine and theirs then result = mine ~= theirs end
+            end
+        end
+    end
+
+    if unit == "target" then
+        attackableKnown, attackableValue = true, result
+    end
+    return result
 end
 
 -- true / false / nil (nil = the client refused the check or answered secretly).
@@ -533,10 +615,9 @@ local function RunBucket(bucket, unit)
     end
 
     if type(CheckInteractDistance) ~= "function" then return nil end
-    if type(InCombatLockdown) == "function" then
-        local ok, locked = pcall(InCombatLockdown)
-        if ok and locked and not AttackablePlain(unit) then return nil end
-    end
+    -- Friendly units are refused these checks while you are in combat; the
+    -- flag is kept by the regen events rather than asked for every tick.
+    if inCombatLockdown and not AttackablePlain(unit) then return nil end
     local ok, result = pcall(CheckInteractDistance, unit, bucket.interact)
     if not ok then
         interactBlocked = true
@@ -597,6 +678,27 @@ end
 ---------------------------------------------------------------------------
 
 local rangeCache = {}       -- [spellID] = { reach = n, minRange = n, source = "..." }
+local radiusCache = {}      -- [spellID] = radius or false
+
+-- The radius a self-centred spell states in its description, read once.
+local function DescriptionRadius(spellID)
+    if not spellID then return nil end
+    local cached = radiusCache[spellID]
+    if cached ~= nil then return cached or nil end
+    local radius = false
+    if client.modern and C_Spell and type(C_Spell.GetSpellDescription) == "function" then
+        local ok, text = pcall(C_Spell.GetSpellDescription, spellID)
+        if ok then
+            text = PlainText(text, nil)
+            if text then
+                local found = tonumber(text:match("within (%d+) yards") or text:match("(%d+) yard radius"))
+                if found then radius = found end
+            end
+        end
+    end
+    radiusCache[spellID] = radius
+    return radius or nil
+end
 local tooltipPath           -- "C_TooltipInfo" / "GameTooltip" / false
 
 local function RangeFromText(text)
@@ -630,6 +732,7 @@ local function TooltipRange(spellID)
 
     if tooltipPath == nil or tooltipPath == "C_TooltipInfo" then
         if client.tooltip then
+            stats.tooltipReads = stats.tooltipReads + 1
             local ok, data = pcall(C_TooltipInfo.GetSpellByID, spellID)
             if ok and type(data) == "table" then
                 tooltipPath = "C_TooltipInfo"
@@ -705,14 +808,8 @@ local function ResolveRange(entry)
                     radius = math.floor(radius * (1 + (entry.bonusPctPerPoint * rank) / 100) + 0.5)
                 end
             end
-            if not radius and entry.spellID and client.modern and C_Spell and type(C_Spell.GetSpellDescription) == "function" then
-                local ok, text = pcall(C_Spell.GetSpellDescription, entry.spellID)
-                if ok then
-                    text = PlainText(text, nil)
-                    if text then
-                        radius = tonumber(text:match("within (%d+) yards") or text:match("(%d+) yard radius"))
-                    end
-                end
+            if not radius and entry.spellID then
+                radius = DescriptionRadius(entry.spellID)
             end
             if radius then
                 reach = math.max(1, radius + (entry.adjust or 0))
@@ -786,9 +883,23 @@ local function TargetReach(entry, unit)
     return nil
 end
 
+-- Spells that share a reach share a measurement: the buckets only depend on
+-- the reach and the unit. The table is reused between passes and only its few
+-- keys are cleared, so repeated checks allocate nothing.
+local reachResults = {}
+
+local function ClearReachResults()
+    for key in pairs(reachResults) do reachResults[key] = nil end
+end
+
 -- true / false / nil for a self-centred or cone spell, from the buckets.
 local function AreaReach(entry, unit)
-    return MeasureReach(entry.reach, unit)
+    local reach = entry.reach
+    if not reach then return nil end
+    local cached = reachResults[reach]
+    if cached ~= nil then return cached end
+    reachResults[reach] = MeasureReach(reach, unit)
+    return reachResults[reach]
 end
 
 local function SpellReaches(entry, unit)
@@ -821,14 +932,10 @@ local function DiscoverShortSpells(knownIDs)
             local hasTargetRange = SpellHasTargetRange(known.spellID)
             if hasTargetRange ~= false and maxRange and maxRange > 0 and maxRange <= 15 then
                 found[#found + 1] = { name = known.name, id = known.spellID, kind = "target", range = maxRange, auto = true, icon = known.icon }
-            elseif hasTargetRange == false and C_Spell and type(C_Spell.GetSpellDescription) == "function" then
-                local ok, text = pcall(C_Spell.GetSpellDescription, known.spellID)
-                if ok then
-                    text = PlainText(text, nil)
-                    local radius = text and tonumber(text:match("within (%d+) yards") or text:match("(%d+) yard radius"))
-                    if radius and radius <= 15 then
-                        found[#found + 1] = { name = known.name, id = known.spellID, kind = "aoe", radius = radius, auto = true, icon = known.icon, shape = "around" }
-                    end
+            elseif hasTargetRange == false then
+                local radius = DescriptionRadius(known.spellID)
+                if radius and radius <= 15 then
+                    found[#found + 1] = { name = known.name, id = known.spellID, kind = "aoe", radius = radius, auto = true, icon = known.icon, shape = "around" }
                 end
             end
         end
@@ -837,7 +944,7 @@ local function DiscoverShortSpells(knownIDs)
 end
 
 local function BuildSpellList()
-    InvalidateBook()
+    stats.rebuilds = stats.rebuilds + 1
     skipped = {}
     spells, spellsByName = {}, {}
 
@@ -899,6 +1006,11 @@ local function BuildSpellList()
         return (a.order or 0) < (b.order or 0)
     end)
 
+    for _, entry in ipairs(resolved) do
+        entry.stateKey = "IN:" .. (entry.name or "?")
+        entry.label = (entry.rangeText or "?") .. "yd"
+    end
+
     spells = resolved
     for _, entry in ipairs(spells) do
         if entry.name then spellsByName[entry.name:lower()] = entry end
@@ -919,14 +1031,15 @@ end
 ---------------------------------------------------------------------------
 
 local function PickSpell(unit)
+    ClearReachResults()
     local answered = false
     for _, entry in ipairs(spells) do
         local reaches = SpellReaches(entry, unit)
-        if reaches == true then return entry, "in" end
+        if reaches == true then return entry, STATE_IN end
         if reaches ~= nil then answered = true end
     end
-    if answered then return nil, "out" end
-    return nil, "unknown"
+    if answered then return nil, STATE_OUT end
+    return nil, STATE_UNKNOWN
 end
 
 local function LongestReachSpell()
@@ -1082,7 +1195,7 @@ local function ShowIdle()
     iconTex:SetVertexColor(0.6, 0.6, 0.6)
     nameLabel:SetText("No Target")
     nameLabel:SetTextColor(0.8, 0.8, 0.8, 1)
-    rangeLabel:SetText(entry and entry.rangeText and (entry.rangeText .. "yd") or "")
+    rangeLabel:SetText(entry and entry.label or "")
     rangeLabel:SetTextColor(0.6, 0.6, 0.6, 1)
     oorTex:Hide()
 end
@@ -1106,7 +1219,7 @@ local function ShowSpell(entry)
     iconTex:SetVertexColor(1, 1, 1)
     nameLabel:SetText(entry.name or "?")
     nameLabel:SetTextColor(1, 1, 0, 1)
-    rangeLabel:SetText((entry.rangeText or "?") .. "yd")
+    rangeLabel:SetText(entry.label or "?yd")
     if entry.reach >= 30 then
         rangeLabel:SetTextColor(0, 1, 0, 1)
     elseif entry.reach >= 20 then
@@ -1262,6 +1375,9 @@ local function DoUpdate(_, elapsed)
 
     if not mainFrame or not mainFrame:IsShown() or not iconTex then return end
 
+    -- One pass, one set of answers.
+    ResetAttackable()
+
     if not HasTarget() then
         if lastState ~= "IDLE" then
             lastState = "IDLE"
@@ -1275,7 +1391,7 @@ local function DoUpdate(_, elapsed)
         if ok and PlainBool(dead, false) then
             if lastState ~= "DEAD" then
                 lastState = "DEAD"
-                ShowState("", "Dead", { 0.6, 0.6, 0.6 }, LongestReachSpell())
+                ShowState("", "Dead", COLOR_DEAD, LongestReachSpell())
             end
             return
         end
@@ -1290,16 +1406,16 @@ local function DoUpdate(_, elapsed)
     end
 
     local entry, state = PickSpell("target")
-    local key = state == "in" and ("IN:" .. (entry.name or "?")) or state:upper()
+    local key = state == STATE_IN and entry.stateKey or state
     if key == lastState then return end
     lastState = key
 
-    if state == "in" then
+    if state == STATE_IN then
         ShowSpell(entry)
-    elseif state == "unknown" then
-        ShowState("?", "Unknown", { 0.8, 0.6, 1 }, LongestReachSpell())
+    elseif state == STATE_UNKNOWN then
+        ShowState("?", "Unknown", COLOR_UNKNOWN, LongestReachSpell())
     else
-        ShowState("OOR", "Out of Range", { 1, 0.3, 0.3 }, LongestReachSpell())
+        ShowState("OOR", "Out of Range", COLOR_OOR, LongestReachSpell())
     end
 end
 
@@ -1338,6 +1454,17 @@ local function ReportProbe()
         .. "  GetSpellBookItemName " .. tostring(type(GetSpellBookItemName) == "function")
         .. "  GetNumTalentTabs " .. tostring(type(GetNumTalentTabs) == "function"))
     Print("Spell list: " .. #spells .. " resolved, " .. #skipped .. " skipped")
+    local heap = 0
+    if type(collectgarbage) == "function" then
+        local ok, kilobytes = pcall(collectgarbage, "count")
+        if ok then heap = math.floor(tonumber(kilobytes) or 0) end
+    end
+    Print("Rebuild delay: " .. stats.rebuildDelay .. "s")
+    Print("Lua heap: " .. heap .. " KB   rebuilds: " .. stats.rebuilds
+        .. "   spellbook scans: " .. stats.bookScans
+        .. "   spell-data requests: " .. stats.requests
+        .. "   tooltip reads: " .. stats.tooltipReads)
+    Print("(heap and rebuilds should stay put while you stand still; if rebuilds keep climbing, something is firing events)")
     local sources = { tooltip = 0, data = 0, table = 0, radius = 0, set = 0 }
     for _, entry in ipairs(spells) do
         if entry.source and sources[entry.source] then sources[entry.source] = sources[entry.source] + 1 end
@@ -1388,10 +1515,12 @@ end
 local function ReportDebug()
     Print("--- Debug ---")
     Print("Client: " .. client.flavor .. "  interface " .. client.iface .. "  build " .. client.build)
+    ResetAttackable()
     local hasTarget = HasTarget()
     Print("Target exists: " .. tostring(hasTarget)
         .. "  attackable: " .. tostring(hasTarget and AttackablePlain("target")))
     if hasTarget then Print("Distance buckets say: " .. DistanceText("target")) end
+    ResetAttackable()
     Print("Primary tree: " .. treeNames[primaryTree])
     Print("Last state: " .. lastState)
     for _, entry in ipairs(spells) do
@@ -1593,19 +1722,28 @@ function events:PLAYER_TARGET_CHANGED()
 end
 
 function events:SPELLS_CHANGED()
-    if initialized then
-        InvalidateRanges()
-        BuildSpellList()
-        lastState = ""
-    end
+    if not initialized then return end
+    -- The spellbook itself changed, so it has to be rescanned, and every cached
+    -- spell record is suspect. One session-wide request budget is spent only
+    -- once, which is what keeps this from becoming a request/rebuild loop.
+    InvalidateBook()
+    spellInfoCache, requestedSpells, radiusCache = {}, {}, {}
+    ns.MarkDirty("spells")
 end
 
-function events:SPELL_DATA_LOAD_RESULT()
-    if initialized then
-        InvalidateRanges()
-        BuildSpellList()
-        lastState = ""
+function events:SPELL_DATA_LOAD_RESULT(spellID, success)
+    if not initialized then return end
+    if type(spellID) ~= "number" then return end
+    -- The client announces every spell it loads, including ones this addon has
+    -- no interest in. Only ours may cost a rebuild.
+    local ours = wantedIDs[spellID]
+    if not ours and book then
+        ours = book.byID and book.byID[spellID] ~= nil
     end
+    if not ours then return end
+    spellInfoCache[spellID] = nil
+    radiusCache[spellID] = nil
+    ns.MarkDirty("spell data")
 end
 
 function events:GET_ITEM_INFO_RECEIVED(id, success)
@@ -1628,7 +1766,14 @@ function events:TRAIT_CONFIG_UPDATED()
     if initialized then ns.QueueRebuild() end
 end
 
+function events:PLAYER_REGEN_DISABLED()
+    inCombatLockdown = true
+    updateElapsed = 999
+    lastState = ""
+end
+
 function events:PLAYER_REGEN_ENABLED()
+    inCombatLockdown = false
     updateElapsed = 999
     lastState = ""
 end
@@ -1646,6 +1791,14 @@ end)
 -- 16. Start-up
 ---------------------------------------------------------------------------
 
+-- One place that refreshes everything derived from the spellbook and talents.
+local function RebuildNow(reason)
+    DetectPrimaryTree()
+    InvalidateRanges()
+    BuildSpellList()
+    lastState = ""
+end
+
 local function InitOnce()
     if initialized or classChecked then return end
     classChecked = true
@@ -1658,6 +1811,10 @@ local function InitOnce()
     isMage = true
     initialized = true
 
+    if type(InCombatLockdown) == "function" then
+        local ok, locked = pcall(InCombatLockdown)
+        inCombatLockdown = ok and locked == true or false
+    end
     SetRaceDistances()
     EnsureItems()
     DetectPrimaryTree()
@@ -1691,20 +1848,44 @@ ns.QueueInit = function()
     end
 end
 
-ns.QueueRebuild = function()
-    if not initialized then return end
-    local function rebuild()
-        DetectPrimaryTree()
-        InvalidateRanges()
-        BuildSpellList()
-        lastState = ""
+-- Anything that invalidates the spell list goes through here. Events arrive in
+-- storms on a fresh login (SPELLS_CHANGED, spell data, traits) and each one
+-- used to schedule its own rebuild: a full spellbook scan and a few hundred
+-- allocations per event, forever, whenever the client kept answering. One
+-- pending rebuild bounds that to at most one per second.
+local rebuildQueued = false
+local REBUILD_DELAY_MIN, REBUILD_DELAY_MAX = 0.75, 5
+
+ns.MarkDirty = function(reason)
+    if not initialized or rebuildQueued then return end
+    rebuildQueued = true
+    local function run()
+        rebuildQueued = false
+        if not initialized then return end
+
+        -- Back off while events keep coming: a client that fires something
+        -- every frame must not turn into a rebuild every 0.75s forever.
+        if type(GetTime) == "function" then
+            local now = GetTime()
+            local last = stats.lastRebuildAt
+            if last > 0 and (now - last) < 1 then
+                stats.rebuildDelay = math.min(REBUILD_DELAY_MAX, stats.rebuildDelay * 2)
+            elseif last > 0 and (now - last) > 10 then
+                stats.rebuildDelay = REBUILD_DELAY_MIN
+            end
+            stats.lastRebuildAt = now
+        end
+
+        RebuildNow(reason)
     end
     if C_Timer and C_Timer.After then
-        C_Timer.After(0.5, rebuild)
+        C_Timer.After(stats.rebuildDelay, run)
     else
-        rebuild()
+        run()
     end
 end
+
+ns.QueueRebuild = ns.MarkDirty
 
 ns.events = events
 ns.spells = spells

@@ -58,6 +58,13 @@ refused answer makes the indicator say `?` (unknown) rather than claiming
 something it cannot know. No combat-log reads, no secure attributes, no maths on
 health or names.
 
+**Nothing runs when nothing changes.** The update loop asks the client only for
+range answers, reuses its cache tables instead of rebuilding them, and rewrites
+the icon's text and texture only when the state actually changes. Spell data is
+read once per spell and kept as plain fields (the client returns a fresh table
+per call), and every event that invalidates the spell list goes through one
+coalesced rebuild rather than scheduling its own.
+
 **No minimap button needed.** On Forever the addon registers in the addon
 compartment through the TOC (`AddonCompartmentFunc`) and the click toggles the
 indicator.
@@ -68,6 +75,44 @@ is the way back out; a plain right-click then does nothing. Each shortcut exists
 only in the state it belongs to, the mouse stays enabled while locked so the
 unlock shortcut is always reachable, and the tooltip shows the shortcut that
 applies right now.
+
+## Memory
+
+A build of this addon leaked about 3 MB a second and then appeared to reset
+whenever the garbage collector caught up. That sawtooth was allocation churn
+from a request/rebuild loop: every rebuild asked the client to load the spell
+data it was missing, each answer fired `SPELL_DATA_LOAD_RESULT`, whose handler
+rebuilt the whole list - full spellbook scan, a few hundred tables and strings -
+and asked again.
+
+What keeps it flat now:
+
+* **Spell data is read once per spell, not once per rebuild**, and a miss is
+  remembered as a miss. Requests are budgeted per session (and capped), only for
+  the spell IDs in the tables, and cleared only when the spellbook itself
+  changes.
+* **`SPELL_DATA_LOAD_RESULT` is filtered**: the client announces every spell it
+  loads, including ones this addon has no interest in. Only ours may cost a
+  rebuild.
+* **Rebuilds are coalesced.** Any number of events cost one deferred rebuild,
+  and repeated bursts back the delay off from 0.75s towards 5s.
+* **The hot path allocates nothing**: no string concatenation per tick, shared
+  reaches share one measurement, the attackable check is answered once per pass,
+  and the combat state comes from the regen events instead of a protected call
+  per check.
+
+`/mri probe` prints the Lua heap and the counters that show where any remaining
+growth comes from:
+
+```
+Lua heap: 412 KB   rebuilds: 1   spellbook scans: 1   spell-data requests: 6   tooltip reads: 5
+Rebuild delay: 0.75s
+```
+
+Stand next to a target and run it twice a minute apart: the heap moves with
+garbage collection, but `rebuilds`, `spellbook scans` and `spell-data requests`
+must not climb. If `rebuilds` does climb, an event is firing on your build and
+the counters say which path it took.
 
 ## Commands
 
@@ -140,7 +185,12 @@ It covers the selection logic on both clients (nearest reaching spell, spec
 priority tie-breaks, out of range, no target, dead, friendly), the secret-value
 paths, tooltip-before-data range resolution, the Classic talent maths
 (Flame Throwing, Arctic Reach), hand-set ranges, the distance buckets and their
-item loading, and the probe/status commands.
+item loading, the mouse lock/unlock shortcuts, and the probe/status commands.
+
+Churn is pinned down by counters on every client call: 200 update ticks may ask
+the range checks and nothing else (no spell lookups, no spellbook scan, no
+rebuild), a storm of 200 spell-data events costs at most one rebuild and zero
+new requests, and repeated rescans never re-request data.
 
 ## Credits and sources
 

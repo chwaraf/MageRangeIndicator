@@ -34,6 +34,8 @@ function Stub.Reset()
         __add = function() error("secret value added") end,
     })
 
+    Stub.calls = {}           -- client-call counters, for the churn checks
+    Stub.requestedSpellIDs = {}  -- [spellID] = how many times the addon asked for it
     Stub.spells = {}          -- [id] = { name, iconID, minRange, maxRange, hasRange, description }
     Stub.idForName = {}       -- [localised name] = id
     Stub.book = {}            -- ordered spellbook entries: { name, id, iconID, isPassive }
@@ -50,6 +52,18 @@ function Stub.Reset()
     Stub.pendingItemRequests = {}
     Stub.slash = {}
     Stub.MRI_OnCompartmentClick = nil
+end
+
+-- Every client call the addon makes goes through here, so a test can prove
+-- that a hot path does not call anything it should have cached.
+local function Count(name)
+    Stub.calls[name] = (Stub.calls[name] or 0) + 1
+end
+
+function Stub.SnapshotCalls()
+    local copy = {}
+    for name, count in pairs(Stub.calls) do copy[name] = count end
+    return copy
 end
 
 local function deepcopy(value)
@@ -273,10 +287,12 @@ local function InstallShared(env)
     env.UnitClass = function() return "Mage", Stub.class end
     env.UnitRace = function() return nil, Stub.race end
     env.UnitExists = function(unit)
+        Count("unitExists")
         if Stub.secretEnabled and unit == "target" then return Stub.secret end
         return unit == "target" and Stub.targetExists or false
     end
     env.UnitCanAttack = function()
+        Count("unitCanAttack")
         if Stub.secretEnabled then return Stub.secret end
         return Stub.targetAttackable
     end
@@ -288,6 +304,7 @@ local function InstallShared(env)
     env.UnitIsUnit = function(a, b) return a == b end
 
     env.CheckInteractDistance = function(_, index)
+        Count("checkInteractDistance")
         if Stub.interactDisabled then return nil end
         if Stub.secretEnabled then return Stub.secret end
         local yards = ({ [1] = 28, [2] = 9, [3] = 8, [4] = 28 })[index]
@@ -308,6 +325,7 @@ end
 local function InstallSpellNamespaces(env)
     env.C_Spell = {
         GetSpellInfo = function(spell)
+            Count("getSpellInfo")
             local id = type(spell) == "number" and spell or Stub.idForName[spell]
             local info = id and Stub.spells[id]
             if not info then return nil end
@@ -321,6 +339,7 @@ local function InstallSpellNamespaces(env)
             }
         end,
         IsSpellInRange = function(spell, unit)
+            Count("isSpellInRange")
             if Stub.secretEnabled then return Stub.secret end
             local id = type(spell) == "number" and spell or Stub.idForName[spell]
             local info = id and Stub.spells[id]
@@ -335,20 +354,26 @@ local function InstallSpellNamespaces(env)
             return info.hasRange ~= false
         end,
         GetSpellDescription = function(spell)
+            Count("getSpellDescription")
             local id = type(spell) == "number" and spell or Stub.idForName[spell]
             local info = id and Stub.spells[id]
             return info and info.description or nil
         end,
         GetSpellCooldownDuration = function() return 0 end,
-        RequestLoadSpellData = function() end,
+        RequestLoadSpellData = function(id)
+            Count("requestLoadSpellData")
+            Stub.requestedSpellIDs[id] = (Stub.requestedSpellIDs[id] or 0) + 1
+        end,
     }
 
     env.C_SpellBook = {
         GetNumSpellBookSkillLines = function() return 1 end,
         GetSpellBookSkillLineInfo = function()
+            Count("getSpellBookSkillLineInfo")
             return { itemIndexOffset = 0, numSpellBookItems = #Stub.book, shouldHide = false, isGuild = false }
         end,
         GetSpellBookItemInfo = function(index)
+            Count("getSpellBookItemInfo")
             local entry = Stub.book[index]
             if not entry then return nil end
             return {
@@ -375,6 +400,7 @@ local function InstallSpellNamespaces(env)
         IsItemDataCachedByID = function(id) return Stub.itemsCached[id] ~= nil end,
         RequestLoadItemDataByID = function(id) Stub.pendingItemRequests[#Stub.pendingItemRequests + 1] = id end,
         IsItemInRange = function(item, unit)
+            Count("isItemInRange")
             if Stub.secretEnabled then return Stub.secret end
             local yards = Stub.itemRanges[item]
             if not yards or unit ~= "target" then return nil end

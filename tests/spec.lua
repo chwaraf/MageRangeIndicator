@@ -477,6 +477,104 @@ local function testMouseLock()
     eq(ns.db.locked, false, "and unlocks again, ending unlocked")
 end
 
+-- ---------------------------------------------------------------------
+-- Churn: the addon used to re-request spell data from inside the rebuild
+-- that each request triggered, and to rebuild the whole spell list on every
+-- client event. These checks pin the fix down.
+-- ---------------------------------------------------------------------
+
+local function testUpdateLoopChurn()
+    local ns = Boot(Load("forever", ForeverMage))
+    if not ns then return end
+
+    Stub.distance = 25
+    Update()
+    eq(Display(), "Scorch", "settled into a range state before measuring churn")
+
+    local rebuilds, scans = ns.stats.rebuilds, ns.stats.bookScans
+    local before = Stub.SnapshotCalls()
+    for _ = 1, 200 do Update() end
+    local after = Stub.SnapshotCalls()
+
+    local function delta(name)
+        return (after[name] or 0) - (before[name] or 0)
+    end
+
+    check(delta("isSpellInRange") > 0, "the update loop does ask the range check (that is its job)")
+    eq(delta("getSpellInfo"), 0, "the update loop never asks the client for spell info")
+    eq(delta("getSpellBookItemInfo"), 0, "the update loop never rescans the spellbook")
+    eq(delta("getSpellBookSkillLineInfo"), 0, "the update loop never reads spellbook skill lines")
+    eq(delta("getSpellDescription"), 0, "the update loop never re-reads spell descriptions")
+    eq(delta("requestLoadSpellData"), 0, "the update loop never requests spell data")
+    eq(ns.stats.rebuilds - rebuilds, 0, "the update loop never rebuilds the spell list")
+    eq(ns.stats.bookScans - scans, 0, "the update loop never rescans the book")
+end
+
+local function testEventStorms()
+    local ns = Boot(Load("forever", ForeverMage))
+    if not ns then return end
+
+    check(ns.stats.rebuilds <= 2, "start-up rebuilds the spell list once", ns.stats.rebuilds)
+    local requests, rebuilds, scans = ns.stats.requests, ns.stats.rebuilds, ns.stats.bookScans
+
+    -- 200 spell-data answers from the client: ours, other addons', successes
+    -- and failures, all in one burst.
+    for i = 1, 200 do
+        local id = (i % 5 == 0) and 133 or (900000 + i)
+        Stub.FireEvent("SPELL_DATA_LOAD_RESULT", id, i % 3 ~= 0)
+    end
+    check(#Stub.timers <= 1, "a spell-data storm leaves at most one pending rebuild", #Stub.timers)
+    Stub.FlushTimers()
+    check(ns.stats.rebuilds - rebuilds <= 1, "a spell-data storm costs at most one rebuild",
+        ns.stats.rebuilds - rebuilds)
+    eq(ns.stats.requests - requests, 0, "a spell-data storm never re-requests spell data")
+    check(ns.stats.bookScans - scans <= 1, "a spell-data storm rescans the spellbook at most once",
+        ns.stats.bookScans - scans)
+
+    -- SPELLS_CHANGED legitimately resets the request budget, but a storm of
+    -- them must still cost one rebuild and one budget, not one per event.
+    local budget = ns.stats.requests
+    for _ = 1, 50 do Stub.FireEvent("SPELLS_CHANGED") end
+    check(#Stub.timers <= 1, "a spellbook storm leaves at most one pending rebuild", #Stub.timers)
+    Stub.FlushTimers()
+    local spent = ns.stats.requests - budget
+    check(spent <= 20, "a spellbook storm spends the request budget once", spent)
+
+    -- And the addon still works after all that.
+    Stub.distance = 15
+    Update()
+    eq(Display(), "Fire Blast", "still selecting spells after the storm")
+end
+
+local function testRequestBudget()
+    local ns = Boot(Load("forever", ForeverMage))
+    if not ns then return end
+
+    local candidates = 0
+    for _ in pairs(ns.wantedIDs or {}) do candidates = candidates + 1 end
+    check(ns.stats.requests <= 32, "start-up asks for a bounded number of spells", ns.stats.requests)
+
+    -- Requests only ever name a spell this addon's tables know, and each of
+    -- those exactly once per session.
+    local wanted, unexpected, repeated = 0, 0, 0
+    for id, count in pairs(Stub.requestedSpellIDs) do
+        wanted = wanted + 1
+        if not (ns.wantedIDs and ns.wantedIDs[id]) then unexpected = unexpected + 1 end
+        if count > 1 then repeated = repeated + 1 end
+    end
+    check(wanted > 0, "some spell data was requested at start-up")
+    eq(unexpected, 0, "only spell IDs from the addon's tables are ever requested")
+    eq(repeated, 0, "no spell ID is requested twice in a session")
+
+    -- Rebuilds that are not caused by a spellbook change must not spend the
+    -- budget again, however many of them happen.
+    local requests = ns.stats.requests
+    for _ = 1, 10 do
+        Stub.RunSlash("talents")
+    end
+    eq(ns.stats.requests, requests, "repeated rescans never re-request spell data")
+end
+
 local function testCommands()
     local ns = Boot(Load("forever", ForeverMage))
     if not ns then return end
@@ -538,6 +636,9 @@ testClientNumbersWin()
 testAutoDiscovery()
 testItemBuckets()
 testItemLoading()
+testUpdateLoopChurn()
+testEventStorms()
+testRequestBudget()
 testMouseLock()
 testLegacyTalentMaths()
 testLegacyOverride()
