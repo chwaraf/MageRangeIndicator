@@ -844,6 +844,273 @@ local function testNonMage()
     check(Stub.ChatContains("for Mages"), "non-mages are told once")
 end
 
+-- ---------------------------------------------------------------------
+-- Classic Era 1.15.9, Forever C_Traits / ranks, and multi-flavor TOCs
+--
+-- Classic Era runs on the modern client engine (C_Spell is present and
+-- global GetSpellInfo is gone), while keeping the classic tabbed spellbook
+-- (C_SpellBook has no GetNumSpellBookSkillLines). Previously that caused
+-- Book() to call ScanModernBook(), get zero spells, and show the Dalaran
+-- Portal fallback icon instead of Fireball on a Fire Mage.
+-- ---------------------------------------------------------------------
+
+local function IconTextureOfFrame()
+    local frame = Stub.FindFrame("MRIFrame")
+    if not frame then return nil end
+    -- children: [1] = background, [2] = iconTex
+    return frame.children[2] and frame.children[2].texture or nil
+end
+
+local function SeedClassicEraFireMage()
+    -- DB2 spell records store untalented base ranges; effectiveRange mirrors
+    -- the live C_Spell.IsSpellInRange answer with 2/2 Flame Throwing (+6 yd).
+    Stub.AddSpell("Fireball", 133, 35, { iconID = 135812, effectiveRange = 41 })
+    Stub.AddSpell("Fireball", 25306, 35, { iconID = 135812, effectiveRange = 41 })
+    Stub.AddSpell("Scorch", 2948, 30, { iconID = 135827, effectiveRange = 36 })
+    Stub.AddSpell("Scorch", 10207, 30, { iconID = 135827, effectiveRange = 36 })
+    Stub.AddSpell("Fire Blast", 2136, 20, { iconID = 135807, effectiveRange = 26 })
+    Stub.AddSpell("Fire Blast", 10199, 20, { iconID = 135807, effectiveRange = 26 })
+    Stub.AddSpell("Frostbolt", 116, 30, { iconID = 135846, effectiveRange = 30 })
+    Stub.AddSpell("Frostbolt", 25304, 30, { iconID = 135846, effectiveRange = 30 })
+    Stub.AddSpell("Arcane Missiles", 5143, 30, { iconID = 136096, effectiveRange = 30 })
+    Stub.AddSpell("Frost Nova", 122, 0, { iconID = 135848, hasRange = false })
+    Stub.AddSpell("Frost Nova", 10230, 0, { iconID = 135848, hasRange = false })
+    Stub.AddSpell("Blast Wave", 11113, 0, { iconID = 135903, hasRange = false })
+    Stub.AddSpell("Blast Wave", 13021, 0, { iconID = 135903, hasRange = false })
+    Stub.AddSpell("Pyroblast", 11366, 35, { iconID = 135808, effectiveRange = 41 })
+    Stub.AddSpell("Ice Lance", 30455, 30, { iconID = 135844, effectiveRange = 30 })
+
+    -- Active spellbook tabs (1..3): multi-rank spells in ascending rank order,
+    -- plus an unlearned FUTURESPELL that must be ignored.
+    Stub.AddBookSpell("Arcane Missiles", 5143, { iconID = 136096 })
+    Stub.AddBookSpell("Fireball", 133, { iconID = 135812 })
+    Stub.AddBookSpell("Fireball", 25306, { iconID = 135812 })
+    Stub.AddBookSpell("Scorch", 2948, { iconID = 135827 })
+    Stub.AddBookSpell("Scorch", 10207, { iconID = 135827 })
+    Stub.AddBookSpell("Fire Blast", 2136, { iconID = 135807 })
+    Stub.AddBookSpell("Fire Blast", 10199, { iconID = 135807 })
+    Stub.AddBookSpell("Blast Wave", 11113, { iconID = 135903 })
+    Stub.AddBookSpell("Blast Wave", 13021, { iconID = 135903 })
+    Stub.AddBookSpell("Pyroblast", 11366, { iconID = 135808, slotType = "FUTURESPELL" })
+    Stub.AddBookSpell("Frostbolt", 116, { iconID = 135846 })
+    Stub.AddBookSpell("Frostbolt", 25304, { iconID = 135846 })
+    Stub.AddBookSpell("Frost Nova", 122, { iconID = 135848 })
+    Stub.AddBookSpell("Frost Nova", 10230, { iconID = 135848 })
+    -- Slot 15 lives in an inactive Dual Spec tab (offSpecID = 2) and must NOT leak.
+    Stub.AddBookSpell("Ice Lance", 30455, { iconID = 135844 })
+
+    Stub.spellTabs = {
+        { name = "Arcane", offset = 0, count = 1, offSpecID = 0 },
+        { name = "Fire", offset = 1, count = 9, offSpecID = 0 },
+        { name = "Frost", offset = 10, count = 4, offSpecID = 0 },
+        { name = "Frost Offspec", offset = 14, count = 1, offSpecID = 2 },
+    }
+
+    Stub.tooltipRanges[25306] = "41 yd range"
+    Stub.tooltipRanges[10207] = "36 yd range"
+    Stub.tooltipRanges[10199] = "26 yd range"
+    Stub.tooltipRanges[25304] = "30 yd range"
+    Stub.tooltipRanges[5143] = "30 yd range"
+
+    -- 17 Arcane / 34 Fire (incl. 2/2 Flame Throwing) / 0 Frost
+    Stub.talents = {
+        [1] = { { name = "Arcane Subtlety", rank = 2, max = 2 }, { name = "Arcane Concentration", rank = 5, max = 5 }, { name = "Clearcasting", rank = 10, max = 10 } },
+        [2] = { { name = "Improved Fireball", rank = 5, max = 5 }, { name = "Flame Throwing", rank = 2, max = 2 }, { name = "Fire Power", rank = 27, max = 27 } },
+        [3] = {},
+    }
+end
+
+local function testClassicEraFireMage()
+    local ns = Boot(Load("era", function()
+        SeedClassicEraFireMage()
+        Stub.targetExists = false
+    end))
+    if not ns then return end
+
+    eq(ns.client.flavor, "Classic Era", "Classic Era 1.15.9 detected accurately")
+    eq(ns.client.modern, true, "Classic Era has C_Spell")
+    eq(ns.client.modernBook, false, "Classic Era does not have C_SpellBook skill lines")
+    check(#ns.spells >= 6, "Classic Era resolves the character's spells instead of an empty book", #ns.spells)
+
+    -- Idle state: shows Fireball's icon (135812) and 41yd, NEVER the Dalaran portal icon.
+    local frame = Stub.FindFrame("MRIFrame")
+    eq(IconTextureOfFrame(), 135812, "Classic Era Fire Mage idle icon is Fireball, not the portal fallback")
+    if frame then
+        eq(frame.fontStrings[1]:GetText(), "41yd", "Classic Era Fire Mage idle range shows 41yd Fireball")
+        eq(frame.fontStrings[2]:GetText(), "No Target", "Classic Era idle label shows No Target")
+    end
+
+    -- Multi-rank promotion + FUTURESPELL & off-spec tab filtering.
+    local fireball = ns.spellsByName["fireball"]
+    check(fireball ~= nil, "Fireball resolved on Classic Era")
+    if fireball then
+        eq(fireball.spellID, 25306, "Classic Era promotes Fireball to the highest learned rank (Rank 12)")
+    end
+    eq(ns.spellsByName["pyroblast"], nil, "FUTURESPELL entries are skipped")
+    eq(ns.spellsByName["ice lance"], nil, "inactive Dual Spec spellbook tabs are skipped")
+
+    -- Live range selection across all Fire Mage range brackets.
+    Stub.targetExists = true
+    Stub.distance = 38
+    Update()
+    local name, range = Display()
+    eq(name, "Fireball", "Classic Era 38 yd -> Fireball")
+    eq(range, "41yd", "Classic Era 38 yd -> 41yd")
+    eq(IconTextureOfFrame(), 135812, "Classic Era 38 yd -> Fireball icon")
+
+    Stub.distance = 32
+    Update()
+    name, range = Display()
+    eq(name, "Scorch", "Classic Era 32 yd -> Scorch")
+    eq(range, "36yd", "Classic Era 32 yd -> 36yd")
+    eq(IconTextureOfFrame(), 135827, "Classic Era 32 yd -> Scorch icon")
+
+    Stub.distance = 22
+    Update()
+    name, range = Display()
+    eq(name, "Fire Blast", "Classic Era 22 yd -> Fire Blast")
+    eq(range, "26yd", "Classic Era 22 yd -> 26yd")
+
+    Stub.distance = 7
+    Update()
+    name, range = Display()
+    eq(name, "Blast Wave", "Classic Era 7 yd -> Fire spec picks Blast Wave over Frost Nova")
+    eq(range, "9yd", "Classic Era 7 yd -> 9yd")
+
+    Stub.distance = 45
+    Update()
+    name, range = Display()
+    eq(name, "Out of Range", "Classic Era 45 yd -> Out of Range")
+    eq(IconTextureOfFrame(), 135812, "Classic Era OOR icon still shows Fireball, not the portal icon")
+end
+
+local function testClassicEraNativeTalentsNoEnglishTooltip()
+    local ns = Boot(Load("era", function()
+        SeedClassicEraFireMage()
+        -- Non-English tooltip text + deprecated GetNumTalentTabs globals disabled:
+        -- C_SpecializationInfo.GetTalentInfo + TableRange must still compute 41yd!
+        Stub.nativeTalentsOnly = true
+        Stub.tooltipRanges = {
+            [25306] = "Zasieg: 41 m",
+            [10207] = "Zasieg: 36 m",
+            [10199] = "Zasieg: 26 m",
+        }
+        -- Re-install without deprecated talent globals after setting nativeTalentsOnly.
+        _G.GetNumTalentTabs = nil
+        _G.GetNumTalents = nil
+        _G.GetTalentInfo = nil
+    end))
+    if not ns then return end
+
+    local fireball = ns.spellsByName["fireball"]
+    local scorch = ns.spellsByName["scorch"]
+    check(fireball ~= nil and scorch ~= nil, "spells resolve with native C_SpecializationInfo talents")
+    if fireball then eq(fireball.reach, 41, "Flame Throwing 2/2 beats untalented DB2 35yd even on non-English tooltips") end
+    if scorch then eq(scorch.reach, 36, "Scorch gets Flame Throwing 2/2 (36yd) on non-English tooltips") end
+end
+
+local function testForeverTraitTreesAndRanks()
+    -- On real WoW: Forever (Camelot), classic GetNumTalentTabs does not exist and
+    -- tree points live in C_Traits group currencies; spellbooks can also list
+    -- multiple ranks with IsSpellBookItemLowRank.
+    local function setupForeverTiedTop(points)
+        Stub.specPoints = { 0, 0, 0 }
+        Stub.traitPoints = points
+        Stub.AddSpell("Fireball", 133, 40, { iconID = 135812 })
+        Stub.AddSpell("Fireball", 25306, 40, { iconID = 135812 })
+        Stub.AddSpell("Frostbolt", 116, 40, { iconID = 135846 })
+        Stub.AddSpell("Arcane Blast", 30451, 40, { iconID = 135735 })
+        Stub.AddSpell("Scorch", 2948, 30, { iconID = 135827 })
+        Stub.AddSpell("Arcane Missiles", 5143, 30, { iconID = 136096 })
+
+        Stub.AddBookSpell("Fireball", 133, { iconID = 135812, lowRank = true })
+        Stub.AddBookSpell("Fireball", 25306, { iconID = 135812, lowRank = false })
+        Stub.AddBookSpell("Frostbolt", 116, { iconID = 135846 })
+        Stub.AddBookSpell("Arcane Blast", 30451, { iconID = 135735 })
+        Stub.AddBookSpell("Scorch", 2948, { iconID = 135827 })
+        Stub.AddBookSpell("Arcane Missiles", 5143, { iconID = 136096 })
+        Stub.targetExists = false
+    end
+
+    -- Fire Mage (10 / 31 / 10): idle shows Fireball (135812) AND highest rank ID 25306.
+    local nsFire = Boot(Load("forever", function() setupForeverTiedTop({ 10, 31, 10 }) end))
+    if nsFire then
+        eq(IconTextureOfFrame(), 135812, "Forever Fire Mage with tied 40yd spells shows Fireball icon when idle")
+        eq(nsFire.spellsByName["fireball"].spellID, 25306, "Forever promotes multi-rank Fireball via IsSpellBookItemLowRank")
+    end
+
+    -- Frost Mage (0 / 17 / 34): idle shows Frostbolt (135846).
+    local nsFrost = Boot(Load("forever", function() setupForeverTiedTop({ 0, 17, 34 }) end))
+    if nsFrost then
+        eq(IconTextureOfFrame(), 135846, "Forever Frost Mage with tied 40yd spells shows Frostbolt icon when idle")
+    end
+
+    -- Arcane Mage (31 / 0 / 20): idle shows Arcane Blast (135735) and 25yd prefers Arcane Missiles over Scorch.
+    local nsArcane = Boot(Load("forever", function()
+        setupForeverTiedTop({ 31, 0, 20 })
+        Stub.targetExists = true
+        Stub.distance = 25
+    end))
+    if nsArcane then
+        eq(Display(), "Arcane Missiles", "Forever Arcane Mage (via C_Traits) prefers Arcane spell over Scorch at 30yd")
+        Stub.targetExists = false
+        Update()
+        eq(IconTextureOfFrame(), 135735, "Forever Arcane Mage shows Arcane Blast icon when idle")
+    end
+end
+
+local function testAllOtherFlavors()
+    local cases = {
+        { mode = "tbc_modern", expectedFlavor = "TBC Classic", activeSpec = 2, expectedIcon = 135812 },
+        { mode = "wrath",      expectedFlavor = "Wrath Classic", activeSpec = 2, expectedIcon = 135812 },
+        { mode = "mists",      expectedFlavor = "Mists Classic", activeSpec = 3, expectedIcon = 135846 },
+        { mode = "mainline",   expectedFlavor = "Mainline (Midnight)", activeSpec = 1, expectedIcon = 135735 },
+    }
+    for _, case in ipairs(cases) do
+        local ns = Boot(Load(case.mode, function()
+            Stub.specPoints = { 0, 0, 0 }
+            Stub.activeSpec = case.activeSpec
+            Stub.AddSpell("Fireball", 133, 40, { iconID = 135812 })
+            Stub.AddSpell("Frostbolt", 116, 40, { iconID = 135846 })
+            Stub.AddSpell("Arcane Blast", 30451, 40, { iconID = 135735 })
+            Stub.AddBookSpell("Fireball", 133, { iconID = 135812 })
+            Stub.AddBookSpell("Frostbolt", 116, { iconID = 135846 })
+            Stub.AddBookSpell("Arcane Blast", 30451, { iconID = 135735 })
+            Stub.targetExists = false
+        end))
+        if ns then
+            eq(ns.client.flavor, case.expectedFlavor, case.mode .. " detects flavor " .. case.expectedFlavor)
+            eq(IconTextureOfFrame(), case.expectedIcon, case.mode .. " idle icon matches primary spec")
+        end
+    end
+end
+
+local function testTocManifests()
+    local manifests = {
+        { file = "MageRangeIndicator_Camelot.toc",  iface = "16001" },
+        { file = "MageRangeIndicator_Forever.toc",  iface = "16001" },
+        { file = "MageRangeIndicator_Vanilla.toc",  iface = "11509" },
+        { file = "MageRangeIndicator_TBC.toc",      iface = "20506" },
+        { file = "MageRangeIndicator_Wrath.toc",    iface = "38002" },
+        { file = "MageRangeIndicator_Cata.toc",     iface = "40402" },
+        { file = "MageRangeIndicator_Mists.toc",    iface = "50504" },
+        { file = "MageRangeIndicator_Mainline.toc", iface = "120105" },
+        { file = "MageRangeIndicator.toc",          iface = "16001" },
+    }
+    for _, item in ipairs(manifests) do
+        local fh = io.open(REPO .. "/" .. item.file, "r")
+        check(fh ~= nil, item.file .. " exists")
+        if fh then
+            local content = fh:read("*a")
+            fh:close()
+            check(content:find("## Interface:[^\n]*" .. item.iface) ~= nil,
+                item.file .. " declares interface " .. item.iface)
+            check(content:find("MageRangeIndicator%.lua") ~= nil,
+                item.file .. " loads MageRangeIndicator.lua")
+        end
+    end
+end
+
 ---------------------------------------------------------------------------
 -- Run
 ---------------------------------------------------------------------------
@@ -871,6 +1138,11 @@ runTest(testLegacyTalentMaths, "testLegacyTalentMaths")
 runTest(testLegacyOverride, "testLegacyOverride")
 runTest(testCommands, "testCommands")
 runTest(testNonMage, "testNonMage")
+runTest(testClassicEraFireMage, "testClassicEraFireMage")
+runTest(testClassicEraNativeTalentsNoEnglishTooltip, "testClassicEraNativeTalentsNoEnglishTooltip")
+runTest(testForeverTraitTreesAndRanks, "testForeverTraitTreesAndRanks")
+runTest(testAllOtherFlavors, "testAllOtherFlavors")
+runTest(testTocManifests, "testTocManifests")
 
 if #failures > 0 then
     io.write("FAILED ", #failures, " of ", passed + #failures, " checks\n")

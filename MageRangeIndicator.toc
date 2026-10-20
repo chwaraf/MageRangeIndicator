@@ -1,8 +1,14 @@
-## Interface: 20504
+## Interface: 16001, 11509, 11508, 20506, 20505, 38002, 40402, 50504, 120105, 120100
 ## Title: Mage Range Indicator
-## Notes: Shows the shortest-range Mage spell that can still reach your target. Classic-era clients (Classic Era / TBC); WoW: Forever loads MageRangeIndicator_Camelot.toc.
+## Notes: Shows the shortest-range Mage spell that can still reach your target. Supports WoW: Forever, Classic Era, TBC, Wrath, Cataclysm, Mists and Mainline.
 ## Author: MRI
-## Version: 6.1.0
+## Version: 6.2.0
 ## SavedVariables: MageRangeIndicatorDB
+## Category: Combat
+## IconTexture: Interface\Icons\Spell_Fire_FlameBolt
+## AddonCompartmentFunc: MRI_OnCompartmentClick
+## AddonCompartmentFuncOnEnter: MRI_OnCompartmentEnter
+## AddonCompartmentFuncOnLeave: MRI_OnCompartmentLeave
+## X-Website: https://github.com/chwaraf/MageRangeIndicator
 
 MageRangeIndicator.lua

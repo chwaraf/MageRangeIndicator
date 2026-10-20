@@ -38,7 +38,7 @@
 local addonName, ns = ...
 ns = ns or {}
 
-local ADDON_VERSION = "6.1.0"
+local ADDON_VERSION = "6.2.0"
 
 ---------------------------------------------------------------------------
 -- 1. Secrets and plain-value helpers
@@ -96,12 +96,14 @@ local client = {
     iface = 0,
     forever = false,
     flavor = "unknown",
-    modern = false,       -- C_Spell / C_SpellBook spell lookups available
+    modern = false,       -- C_Spell spell lookups available
+    modernBook = false,   -- C_SpellBook skill-line scanner available (Forever, Mainline)
     secrets = false,      -- issecretvalue exists
     tooltip = false,      -- C_TooltipInfo.GetSpellByID
     itemRange = false,    -- C_Item.IsItemInRange
     spellRange = false,   -- C_Spell.IsSpellInRange
     specInfo = false,     -- C_SpecializationInfo
+    traits = false,       -- C_Traits group currency (Forever 3-tree points)
 }
 
 do
@@ -112,22 +114,43 @@ do
 
     client.secrets = type(issecretvalue) == "function"
     client.modern = C_Spell ~= nil and type(C_Spell.GetSpellInfo) == "function"
+    client.modernBook = C_SpellBook ~= nil
+        and type(C_SpellBook.GetNumSpellBookSkillLines) == "function"
+        and type(C_SpellBook.GetSpellBookSkillLineInfo) == "function"
+        and type(C_SpellBook.GetSpellBookItemInfo) == "function"
     client.spellRange = C_Spell ~= nil and type(C_Spell.IsSpellInRange) == "function"
     client.tooltip = C_TooltipInfo ~= nil and type(C_TooltipInfo.GetSpellByID) == "function"
     client.itemRange = C_Item ~= nil and type(C_Item.IsItemInRange) == "function"
     client.specInfo = C_SpecializationInfo ~= nil and type(C_SpecializationInfo.GetSpecializationInfo) == "function"
+    client.traits = C_Traits ~= nil
+        and type(C_Traits.GetGroupDisplayInfoByTreeID) == "function"
+        and type(C_Traits.GetGroupCurrencyInfo) == "function"
 
-    local namedConstant = type(WOW_PROJECT_CAMELOT) == "number"
-    client.forever = (namedConstant and WOW_PROJECT_ID == WOW_PROJECT_CAMELOT)
+    local namedCamelot = type(WOW_PROJECT_CAMELOT) == "number"
+    local foreverProbe = C_GameRules ~= nil and type(C_GameRules.GetForeverExperiencePreset) == "function"
+    client.forever = (namedCamelot and WOW_PROJECT_ID == WOW_PROJECT_CAMELOT)
+        or foreverProbe
         or (client.iface >= 16000 and client.iface < 20000)
 
     if client.forever then
         client.flavor = "WoW: Forever (camelot)"
-    elseif client.iface >= 11500 and client.iface < 11600 then
+    elseif (type(WOW_PROJECT_CLASSIC) == "number" and WOW_PROJECT_ID == WOW_PROJECT_CLASSIC)
+        or (client.iface >= 11300 and client.iface < 16000) then
         client.flavor = "Classic Era"
-    elseif client.iface >= 20000 and client.iface < 21000 then
+    elseif (type(WOW_PROJECT_BURNING_CRUSADE_CLASSIC) == "number" and WOW_PROJECT_ID == WOW_PROJECT_BURNING_CRUSADE_CLASSIC)
+        or (client.iface >= 20000 and client.iface < 30000) then
         client.flavor = "TBC Classic"
-    elseif client.iface >= 120000 then
+    elseif (type(WOW_PROJECT_WRATH_CLASSIC) == "number" and WOW_PROJECT_ID == WOW_PROJECT_WRATH_CLASSIC)
+        or (client.iface >= 30000 and client.iface < 40000) then
+        client.flavor = "Wrath Classic"
+    elseif (type(WOW_PROJECT_CATACLYSM_CLASSIC) == "number" and WOW_PROJECT_ID == WOW_PROJECT_CATACLYSM_CLASSIC)
+        or (client.iface >= 40000 and client.iface < 50000) then
+        client.flavor = "Cataclysm Classic"
+    elseif (type(WOW_PROJECT_MISTS_CLASSIC) == "number" and WOW_PROJECT_ID == WOW_PROJECT_MISTS_CLASSIC)
+        or (client.iface >= 50000 and client.iface < 60000) then
+        client.flavor = "Mists Classic"
+    elseif (type(WOW_PROJECT_MAINLINE) == "number" and WOW_PROJECT_ID == WOW_PROJECT_MAINLINE)
+        or client.iface >= 100000 then
         client.flavor = "Mainline (Midnight)"
     else
         client.flavor = "unknown (interface " .. client.iface .. ")"
@@ -236,17 +259,19 @@ end
 ---------------------------------------------------------------------------
 
 local SPELL_DATA = {
-    { name = "Fireball",        id = 133,   range = 35, school = SCHOOL_FIRE,   talent = "Flame Throwing", bonusPerPoint = 3 },
-    { name = "Frostbolt",       id = 116,   range = 30, school = SCHOOL_FROST,  talent = "Arctic Reach",   bonusPctPerPoint = 10 },
-    { name = "Scorch",          id = 2948,  range = 30, school = SCHOOL_FIRE,   talent = "Flame Throwing", bonusPerPoint = 3 },
-    { name = "Arcane Missiles", id = 5143,  range = 30, school = SCHOOL_ARCANE },
-    { name = "Fire Blast",      id = 2136,  range = 20, school = SCHOOL_FIRE,   talent = "Flame Throwing", bonusPerPoint = 3 },
-    { name = "Arcane Blast",    id = 30451, range = 30, school = SCHOOL_ARCANE },
-    { name = "Ice Lance",       id = 30455, range = 30, school = SCHOOL_FROST,  talent = "Arctic Reach",   bonusPctPerPoint = 10 },
-    { name = "Blizzard",        id = 10,    range = 30, school = SCHOOL_FROST,  talent = "Arctic Reach",   bonusPctPerPoint = 10 },
-    { name = "Flamestrike",     id = 2120,  range = 30, school = SCHOOL_FIRE,   talent = "Flame Throwing", bonusPerPoint = 3 },
-    { name = "Polymorph",       id = 118,   range = 30, school = SCHOOL_ARCANE },
-    { name = "Counterspell",    id = 2139,  range = 30, school = SCHOOL_ARCANE },
+    { name = "Fireball",        id = 133,   icon = 135812, range = 35, school = SCHOOL_FIRE,   talent = "Flame Throwing",   bonusPerPoint = 3 },
+    { name = "Frostbolt",       id = 116,   icon = 135846, range = 30, school = SCHOOL_FROST,  talent = "Arctic Reach",     bonusPctPerPoint = 10 },
+    { name = "Scorch",          id = 2948,  icon = 135827, range = 30, school = SCHOOL_FIRE,   talent = "Flame Throwing",   bonusPerPoint = 3 },
+    { name = "Arcane Missiles", id = 5143,  icon = 136096, range = 30, school = SCHOOL_ARCANE, talent = "Magic Attunement", bonusPerPoint = 3 },
+    { name = "Fire Blast",      id = 2136,  icon = 135807, range = 20, school = SCHOOL_FIRE,   talent = "Flame Throwing",   bonusPerPoint = 3 },
+    { name = "Arcane Blast",    id = 30451, icon = 135735, range = 30, school = SCHOOL_ARCANE, talent = "Magic Attunement", bonusPerPoint = 3 },
+    { name = "Ice Lance",       id = 30455, icon = 135844, range = 30, school = SCHOOL_FROST,  talent = "Arctic Reach",     bonusPctPerPoint = 10 },
+    { name = "Pyroblast",       id = 11366, icon = 135808, range = 35, school = SCHOOL_FIRE,   talent = "Flame Throwing",   bonusPerPoint = 3 },
+    { name = "Arcane Barrage",  id = 44425, icon = 236205, range = 30, school = SCHOOL_ARCANE, talent = "Magic Attunement", bonusPerPoint = 3 },
+    { name = "Blizzard",        id = 10,    icon = 135857, range = 30, school = SCHOOL_FROST,  talent = "Arctic Reach",     bonusPctPerPoint = 10 },
+    { name = "Flamestrike",     id = 2120,  icon = 135826, range = 30, school = SCHOOL_FIRE,   talent = "Flame Throwing",   bonusPerPoint = 3 },
+    { name = "Polymorph",       id = 118,   icon = 136071, range = 30, school = SCHOOL_ARCANE },
+    { name = "Counterspell",    id = 2139,  icon = 135856, range = 30, school = SCHOOL_ARCANE, talent = "Magic Attunement", bonusPerPoint = 3 },
 }
 
 -- Spells centred on the caster, or in a cone in front of it, have no target
@@ -257,10 +282,11 @@ local SPELL_DATA = {
 -- reaches about 9.5 standing still). Under-claiming is deliberate: the icon
 -- lights only when the spell will really land.
 local AOE_DATA = {
-    { name = "Frost Nova",      id = 122,   radius = 10, adjust = -1, shape = "around", school = SCHOOL_FROST,  talent = "Arctic Reach", bonusPctPerPoint = 10, range = 10 },
-    { name = "Cone of Cold",    id = 120,   radius = 10, adjust = -1, shape = "cone",   school = SCHOOL_FROST,  talent = "Arctic Reach", bonusPctPerPoint = 10, range = 10 },
-    { name = "Arcane Explosion", id = 1449, radius = 10, adjust = -1, shape = "around", school = SCHOOL_ARCANE, range = 10 },
-    { name = "Blast Wave",      id = 11113, radius = 10, adjust = -1, shape = "around", school = SCHOOL_FIRE,   range = 10 },
+    { name = "Frost Nova",       id = 122,   icon = 135848, radius = 10, adjust = -1, shape = "around", school = SCHOOL_FROST,  talent = "Arctic Reach", bonusPctPerPoint = 10, range = 10 },
+    { name = "Cone of Cold",     id = 120,   icon = 135852, radius = 10, adjust = -1, shape = "cone",   school = SCHOOL_FROST,  talent = "Arctic Reach", bonusPctPerPoint = 10, range = 10 },
+    { name = "Arcane Explosion", id = 1449,  icon = 136116, radius = 10, adjust = -1, shape = "around", school = SCHOOL_ARCANE, range = 10 },
+    { name = "Blast Wave",       id = 11113, icon = 135903, radius = 10, adjust = -1, shape = "around", school = SCHOOL_FIRE,   range = 10 },
+    { name = "Dragon's Breath",  id = 31661, icon = 134153, radius = 10, adjust = -1, shape = "cone",   school = SCHOOL_FIRE,   range = 10 },
 }
 
 -- The spell IDs the tables above name. Only these are ever asked of the
@@ -342,14 +368,35 @@ local function LocalizedName(spellID)
     return info and info.name or nil
 end
 
-local function SpellIcon(spellID, fallbackName)
+local function PlainAsset(value)
+    return PlainNum(value, nil) or PlainText(value, nil)
+end
+
+local function SpellIcon(spellID, fallbackName, fallbackIcon)
     local info = SpellInfo(spellID)
     if info and info.iconID then return info.iconID end
+    if spellID and C_Spell and type(C_Spell.GetSpellTexture) == "function" then
+        local ok, tex = pcall(C_Spell.GetSpellTexture, spellID)
+        if ok then
+            tex = PlainAsset(tex)
+            if tex then return tex end
+        end
+    end
+    if fallbackName and type(GetSpellTexture) == "function" then
+        local ok, tex = pcall(GetSpellTexture, fallbackName)
+        if ok then
+            tex = PlainAsset(tex)
+            if tex then return tex end
+        end
+    end
     if fallbackName and type(GetSpellInfo) == "function" then
         local ok, _, _, icon = pcall(GetSpellInfo, fallbackName)
-        if ok then return icon end
+        if ok then
+            icon = PlainAsset(icon)
+            if icon then return icon end
+        end
     end
-    return nil
+    return fallbackIcon
 end
 
 -- Data range for a spell ID: maxRange / minRange as the client has them.
@@ -376,17 +423,29 @@ local function SpellHasTargetRange(spellID)
     return nil
 end
 
+-- Multi-rank spellbooks (Classic Era, TBC, Wrath, and Forever with all ranks
+-- shown) list every rank of a spell. `byName` holds the highest learned rank,
+-- and any lower rank's ID (such as Rank 1 Fireball = 133 in SPELL_DATA) is
+-- promoted to that highest rank entry so lookups by base ID resolve the rank
+-- the character actually casts.
+local function PromoteHighestRanks(byName, byID)
+    for id, item in pairs(byID) do
+        if item.name then
+            local highest = byName[item.name:lower()]
+            if highest then byID[id] = highest end
+        end
+    end
+end
+
 local function ScanModernBook()
     local byName, byID = {}, {}
-    if not (client.modern and C_SpellBook
-        and type(C_SpellBook.GetNumSpellBookSkillLines) == "function"
-        and type(C_SpellBook.GetSpellBookSkillLineInfo) == "function"
-        and type(C_SpellBook.GetSpellBookItemInfo) == "function") then
+    if not client.modernBook then
         return byName, byID
     end
 
     local bank = (Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player) or 0
     local spellType = Enum and Enum.SpellBookItemType and Enum.SpellBookItemType.Spell
+    local hasLowRank = type(C_SpellBook.IsSpellBookItemLowRank) == "function"
 
     pcall(function()
         for line = 1, C_SpellBook.GetNumSpellBookSkillLines() do
@@ -398,16 +457,25 @@ local function ScanModernBook()
                 for index = offset + 1, offset + count do
                     local item = C_SpellBook.GetSpellBookItemInfo(index, bank)
                     if type(item) == "table" and item.spellID and (not spellType or item.itemType == spellType) then
+                        local lowRank = false
+                        if hasLowRank then
+                            local okLow, low = pcall(C_SpellBook.IsSpellBookItemLowRank, index, bank)
+                            if okLow then lowRank = PlainBool(low, false) end
+                        end
                         local entry = {
                             name = PlainText(item.name, nil),
                             spellID = PlainNum(item.spellID, nil),
                             icon = PlainNum(item.iconID, nil),
                             isPassive = PlainBool(item.isPassive, false),
                             isOffSpec = PlainBool(item.isOffSpec, false),
+                            lowRank = lowRank,
                         }
                         if entry.name then
                             local key = entry.name:lower()
-                            if not byName[key] then byName[key] = entry end
+                            local prev = byName[key]
+                            if not prev or prev.lowRank or not entry.lowRank then
+                                byName[key] = entry
+                            end
                         end
                         if entry.spellID and not byID[entry.spellID] then byID[entry.spellID] = entry end
                     end
@@ -416,20 +484,94 @@ local function ScanModernBook()
         end
     end)
 
+    PromoteHighestRanks(byName, byID)
     return byName, byID
 end
 
 local function ScanLegacyBook()
     local byName, byID = {}, {}
     if type(GetSpellBookItemName) ~= "function" then return byName, byID end
+    local bookType = BOOKTYPE_SPELL or "spell"
+    local hasItemInfo = type(GetSpellBookItemInfo) == "function"
+    local hasHidden = type(IsSpellHidden) == "function"
+    local hasTexture = type(GetSpellTexture) == "function"
+    local hasPassive = type(IsPassiveSpell) == "function"
+
+    local function RecordSlot(slot)
+        local slotType, slotID
+        if hasItemInfo then
+            local okInfo, kind, id = pcall(GetSpellBookItemInfo, slot, bookType)
+            if okInfo and type(kind) == "string" then
+                slotType, slotID = kind, id
+                if kind ~= "SPELL" then return true end
+            end
+        end
+        if hasHidden then
+            local okHidden, hidden = pcall(IsSpellHidden, slot, bookType)
+            if okHidden and PlainBool(hidden, false) then return true end
+        end
+
+        local ok, name, _, nameSpellID = pcall(GetSpellBookItemName, slot, bookType)
+        name = ok and PlainText(name, nil) or nil
+        if not name then return false end
+
+        local icon
+        if hasTexture then
+            local okTex, tex = pcall(GetSpellTexture, slot, bookType)
+            if okTex then icon = PlainAsset(tex) end
+        end
+
+        local passive = false
+        if hasPassive then
+            local okPas, pas = pcall(IsPassiveSpell, slot, bookType)
+            if okPas then passive = PlainBool(pas, false) end
+        end
+
+        local spellID = PlainNum(nameSpellID, nil) or PlainNum(slotID, nil)
+        local entry = {
+            name = name,
+            index = slot,
+            spellID = spellID,
+            icon = icon,
+            isPassive = passive,
+        }
+        -- Overwrite earlier ranks: Classic spellbooks list Rank 1 .. Rank N in
+        -- slot order, so the latest slot is the highest learned rank.
+        byName[name:lower()] = entry
+        if spellID then byID[spellID] = entry end
+        return true
+    end
+
+    -- Classic Era, TBC, Wrath, Cata and Mists expose spell tabs (including
+    -- inactive Dual Spec tabs marked with offSpecID ~= 0, which must be
+    -- skipped so off-spec talent spells do not appear known).
+    if type(GetNumSpellTabs) == "function" and type(GetSpellTabInfo) == "function" then
+        local okTabs, numTabs = pcall(GetNumSpellTabs)
+        numTabs = okTabs and PlainNum(numTabs, nil) or nil
+        if numTabs and numTabs > 0 then
+            for tab = 1, numTabs do
+                local okTab, _, _, offset, numSlots, isGuild, offSpecID, shouldHide = pcall(GetSpellTabInfo, tab)
+                if okTab then
+                    offset = PlainNum(offset, 0) or 0
+                    numSlots = PlainNum(numSlots, 0) or 0
+                    offSpecID = PlainNum(offSpecID, 0) or 0
+                    if shouldHide ~= true and isGuild ~= true and offSpecID == 0 then
+                        for slot = offset + 1, offset + numSlots do
+                            RecordSlot(slot)
+                        end
+                    end
+                end
+            end
+            PromoteHighestRanks(byName, byID)
+            return byName, byID
+        end
+    end
+
     local index = 1
-    while true do
-        local ok, name = pcall(GetSpellBookItemName, index, BOOKTYPE_SPELL or "spell")
-        if not ok or type(name) ~= "string" then break end
-        local key = name:lower()
-        if not byName[key] then byName[key] = { name = name, index = index } end
+    while RecordSlot(index) do
         index = index + 1
     end
+    PromoteHighestRanks(byName, byID)
     return byName, byID
 end
 
@@ -439,10 +581,18 @@ local function Book()
     if not book or bookDirty then
         local byName, byID
         stats.bookScans = stats.bookScans + 1
-        if client.modern then
+        if client.modernBook then
             byName, byID = ScanModernBook()
-        else
-            byName, byID = ScanLegacyBook()
+        end
+        -- Classic Era, TBC Anniversary, Wrath, Cata and Mists all have C_Spell
+        -- (modern engine) while keeping the classic spellbook globals instead
+        -- of C_SpellBook skill lines: always fall through to ScanLegacyBook
+        -- whenever the modern skill-line API is absent or empty.
+        if not byName or next(byName) == nil then
+            local legName, legID = ScanLegacyBook()
+            if next(legName) ~= nil or not byName then
+                byName, byID = legName, legID
+            end
         end
         book = { byName = byName, byID = byID }
         bookDirty = false
@@ -835,12 +985,19 @@ local function ResolveRange(entry)
         else
             local tooltip = TooltipRange(entry.spellID)
             local dataMax, dataMin = DataRange(entry.spellID)
+            local tableMax = TableRange(entry)
             if tooltip then
                 reach, minRange, source = tooltip, dataMin, "tooltip"
+            elseif entry.talent and TalentRank(entry.talent) > 0 and tableMax and tableMax > (dataMax or 0) then
+                -- Classic Era / TBC / Wrath DB2 `C_Spell.GetSpellInfo` holds the
+                -- untalented base range (e.g. 35 yd for Fireball). When tooltip
+                -- text is unparsed (e.g. non-English locale) and talent ranks
+                -- are known, apply the talent bonus instead of clamping to base.
+                reach, minRange, source = tableMax, dataMin, "table"
             elseif dataMax and dataMax > 0 then
                 reach, minRange, source = dataMax, dataMin, "data"
             else
-                reach, source = TableRange(entry), "table"
+                reach, source = tableMax, "table"
             end
         end
         rangeCache[entry.spellID or entry.name] = { reach = reach, minRange = minRange, source = source }
@@ -870,30 +1027,39 @@ end
 -- 8. Range checks
 ---------------------------------------------------------------------------
 
+local function ParseLegacyRangeResult(result)
+    if result == nil or Sealed(result) then return nil end
+    local number = PlainNum(result, nil)
+    if number ~= nil then return number == 1 end
+    return PlainBool(result, nil)
+end
+
 -- true / false / nil for a spell with a target range.
 local function TargetReach(entry, unit)
     if client.spellRange and entry.spellID then
         local ok, result = pcall(C_Spell.IsSpellInRange, entry.spellID, unit)
         if ok then
+            if Sealed(result) then return nil end
             local plain = PlainBool(result, nil)
             if plain ~= nil then return plain end
-            if result == nil then return nil end
-            return nil -- secret
         end
     end
 
-    -- Classic-era clients: the old global, index form first, then by name.
+    -- Classic-era fallback: index form first, then by name, with zero table
+    -- allocations on the hot path.
     if type(IsSpellInRange) == "function" then
-        local attempts = {}
-        if entry.bookIndex then attempts[#attempts + 1] = { entry.bookIndex, "spell", unit } end
-        if entry.name then attempts[#attempts + 1] = { entry.name, unit } end
-        for _, args in ipairs(attempts) do
-            local ok, result = pcall(IsSpellInRange, unpack(args))
-            if ok and result ~= nil then
-                local number = PlainNum(result, nil)
-                if number then return number == 1 end
-                local boolean = PlainBool(result, nil)
-                if boolean ~= nil then return boolean end
+        if entry.bookIndex then
+            local ok, result = pcall(IsSpellInRange, entry.bookIndex, BOOKTYPE_SPELL or "spell", unit)
+            if ok then
+                local parsed = ParseLegacyRangeResult(result)
+                if parsed ~= nil then return parsed end
+            end
+        end
+        if entry.name then
+            local ok, result = pcall(IsSpellInRange, entry.name, unit)
+            if ok then
+                local parsed = ParseLegacyRangeResult(result)
+                if parsed ~= nil then return parsed end
             end
         end
     end
@@ -974,11 +1140,13 @@ local function BuildSpellList()
     end
 
     for _, data in ipairs(SPELL_DATA) do
-        Add({ name = data.name, baseName = data.name, id = data.id, kind = "target", range = data.range, school = data.school,
+        Add({ name = data.name, baseName = data.name, id = data.id, defaultIcon = data.icon,
+              kind = "target", range = data.range, school = data.school,
               talent = data.talent, bonusPerPoint = data.bonusPerPoint, bonusPctPerPoint = data.bonusPctPerPoint })
     end
     for _, data in ipairs(AOE_DATA) do
-        Add({ name = data.name, baseName = data.name, id = data.id, kind = "aoe", radius = data.radius, adjust = data.adjust,
+        Add({ name = data.name, baseName = data.name, id = data.id, defaultIcon = data.icon,
+              kind = "aoe", radius = data.radius, adjust = data.adjust,
               shape = data.shape, range = data.range, school = data.school,
               talent = data.talent, bonusPctPerPoint = data.bonusPctPerPoint })
     end
@@ -991,7 +1159,7 @@ local function BuildSpellList()
             entry.bookIndex = known.index
             entry.spellID = known.spellID or entry.id
             entry.name = known.name or entry.name
-            entry.icon = known.icon or SpellIcon(entry.spellID, entry.name)
+            entry.icon = known.icon or SpellIcon(entry.spellID, entry.name, entry.defaultIcon)
             if entry.spellID then knownIDs[entry.spellID] = true end
             ResolveRange(entry)
             if entry.reach then
@@ -1009,7 +1177,7 @@ local function BuildSpellList()
         local resolvedEntry = entry
         order = order + 1
         resolvedEntry.order = order
-        if not resolvedEntry.icon then resolvedEntry.icon = SpellIcon(entry.id, entry.name) end
+        if not resolvedEntry.icon then resolvedEntry.icon = SpellIcon(entry.id, entry.name, entry.defaultIcon) end
         ResolveRange(resolvedEntry)
         if resolvedEntry.reach then
             resolvedEntry.priority = SpellPriority(resolvedEntry.school)
@@ -1059,8 +1227,17 @@ local function PickSpell(unit)
     return nil, STATE_UNKNOWN
 end
 
+-- `spells` is sorted (reach ASC, priority ASC, order ASC), so within the
+-- highest reach tier the FIRST entry is the character's primary-spec spell
+-- (Fireball for Fire, Frostbolt for Frost, Arcane Blast / Missiles for
+-- Arcane), whereas `spells[#spells]` would be the lowest-priority tie.
 local function LongestReachSpell()
-    return spells[#spells]
+    local last = spells[#spells]
+    if not last then return nil end
+    for i = 1, #spells do
+        if spells[i].reach == last.reach then return spells[i] end
+    end
+    return last
 end
 
 local function HasTarget()
@@ -1096,54 +1273,163 @@ local function ReadSpecializationPoints(index)
     return points
 end
 
+local function ReadTraitTreePoints()
+    if not (client.traits and C_Traits) then return false end
+    local found = false
+    pcall(function()
+        local activeGroup = 1
+        if C_SpecializationInfo and type(C_SpecializationInfo.GetActiveSpecGroup) == "function" then
+            activeGroup = PlainNum(C_SpecializationInfo.GetActiveSpecGroup(), 1) or 1
+        end
+        local configID
+        if C_SpecializationInfo and type(C_SpecializationInfo.GetCombatConfigIDForSpecGroup) == "function" then
+            configID = PlainNum(C_SpecializationInfo.GetCombatConfigIDForSpecGroup(activeGroup), nil)
+        end
+        if not configID and C_ClassTalents and type(C_ClassTalents.GetActiveConfigID) == "function" then
+            configID = PlainNum(C_ClassTalents.GetActiveConfigID(), nil)
+        end
+        if not configID or type(C_Traits.GetConfigInfo) ~= "function" then return end
+
+        local configInfo = C_Traits.GetConfigInfo(configID)
+        local treeID = type(configInfo) == "table" and type(configInfo.treeIDs) == "table"
+            and PlainNum(configInfo.treeIDs[1], nil) or nil
+        if not treeID then return end
+
+        local displayInfos = C_Traits.GetGroupDisplayInfoByTreeID(treeID)
+        if type(displayInfos) ~= "table" or #displayInfos == 0 then return end
+
+        local groupIDs = {}
+        for i, info in ipairs(displayInfos) do
+            if type(info) == "table" and info.groupID then
+                groupIDs[#groupIDs + 1] = info.groupID
+            end
+        end
+        if #groupIDs == 0 then return end
+
+        local groupInfos = C_Traits.GetGroupCurrencyInfo(configID, groupIDs)
+        if type(groupInfos) ~= "table" then return end
+
+        local byGroupID = {}
+        for _, gInfo in ipairs(groupInfos) do
+            if type(gInfo) == "table" and gInfo.traitNodeGroupID then
+                byGroupID[gInfo.traitNodeGroupID] = gInfo
+            end
+        end
+        for i = 1, math.min(3, #displayInfos) do
+            local gInfo = byGroupID[displayInfos[i].groupID]
+            local currencies = gInfo and gInfo.currencyInfos
+            local spent = type(currencies) == "table" and type(currencies[1]) == "table"
+                and PlainNum(currencies[1].spent, 0) or 0
+            treePoints[i] = spent
+            found = true
+        end
+    end)
+    return found
+end
+
+local function ApplyBestTree()
+    local best, bestPoints = nil, 0
+    for i = 1, 3 do
+        if treePoints[i] > bestPoints then best, bestPoints = i, treePoints[i] end
+    end
+    if best then
+        primaryTree = best
+        return true
+    end
+    return false
+end
+
 local function DetectPrimaryTree()
-    -- Classic-era clients: the talent tabs, same as ever.
-    local ok, numTabs = pcall(GetNumTalentTabs)
-    if ok and type(numTabs) == "number" and numTabs > 0 then
-        ns.talentCache = {}
-        treePoints = { 0, 0, 0 }
-        for tab = 1, numTabs do
-            local okTalents, numTalents = pcall(GetNumTalents, tab)
-            if okTalents and type(numTalents) == "number" then
-                for i = 1, numTalents do
-                    local okInfo, name, _, _, _, rank = pcall(GetTalentInfo, tab, i)
-                    if okInfo and type(name) == "string" then
-                        ns.talentCache[name] = PlainNum(rank, 0) or 0
-                        if tab <= 3 then treePoints[tab] = treePoints[tab] + (PlainNum(rank, 0) or 0) end
+    ns.talentCache = {}
+    treePoints = { 0, 0, 0 }
+    primaryTree = SCHOOL_FIRE
+
+    -- 1. Classic talent globals (Classic Era, TBC, Wrath, Cata when loaded).
+    if type(GetNumTalentTabs) == "function" and type(GetNumTalents) == "function" and type(GetTalentInfo) == "function" then
+        local ok, numTabs = pcall(GetNumTalentTabs)
+        if ok and type(numTabs) == "number" and numTabs > 0 then
+            local sawTalent = false
+            for tab = 1, numTabs do
+                local okTalents, numTalents = pcall(GetNumTalents, tab)
+                if okTalents and type(numTalents) == "number" then
+                    for i = 1, numTalents do
+                        local okInfo, name, _, _, _, rank = pcall(GetTalentInfo, tab, i)
+                        if okInfo and type(name) == "string" then
+                            sawTalent = true
+                            local pts = PlainNum(rank, 0) or 0
+                            ns.talentCache[name] = pts
+                            if tab <= 3 then treePoints[tab] = treePoints[tab] + pts end
+                        end
                     end
                 end
             end
+            if sawTalent then
+                ApplyBestTree()
+                return
+            end
         end
-        local best, bestPoints = nil, 0
-        for i = 1, 3 do
-            if treePoints[i] > bestPoints then best, bestPoints = i, treePoints[i] end
+    end
+
+    -- 2. Native C_SpecializationInfo.GetTalentInfo query table (Classic Era
+    -- 1.15.x, TBC Anniversary 2.5.x, Wrath 3.80.x and Cata, even when
+    -- Blizzard_DeprecatedSpecialization fallbacks are turned off).
+    if C_SpecializationInfo and type(C_SpecializationInfo.GetTalentInfo) == "function" then
+        local sawNative = false
+        for tab = 1, 3 do
+            for i = 1, 40 do
+                local okInfo, info = pcall(C_SpecializationInfo.GetTalentInfo, {
+                    specializationIndex = tab,
+                    talentIndex = i,
+                })
+                if not okInfo or type(info) ~= "table" or info.rank == nil then break end
+                local name = PlainText(info.name, nil)
+                if not name then break end
+                sawNative = true
+                local pts = PlainNum(info.rank, 0) or 0
+                ns.talentCache[name] = pts
+                treePoints[tab] = treePoints[tab] + pts
+            end
         end
-        if best then primaryTree = best end
+        if sawNative then
+            ApplyBestTree()
+            return
+        end
+    end
+
+    -- 3. WoW: Forever (Camelot) 3-tree trait group currency spent.
+    if ReadTraitTreePoints() and ApplyBestTree() then
         return
     end
 
-    -- Modern clients: points spent per specialisation (Arcane, Fire, Frost).
+    -- 4. C_SpecializationInfo points spent per tree, then active spec index
+    -- (Mists Classic and Mainline / Midnight select spec 1..3 directly).
     if client.specInfo then
-        local best, bestPoints = nil, 0
         local count = 3
         if type(C_SpecializationInfo.GetNumSpecializations) == "function" then
             local okCount, value = pcall(C_SpecializationInfo.GetNumSpecializations)
             value = PlainNum(value, nil)
             if value and value > 0 then count = value end
         end
-        for i = 1, count do
+        for i = 1, math.min(3, count) do
             local points = ReadSpecializationPoints(i)
-            if points and points > bestPoints then best, bestPoints = i, points end
+            if points then treePoints[i] = points end
         end
-        if best then
-            primaryTree = best
-            return
+        if ApplyBestTree() then return end
+
+        local specFn = (type(C_SpecializationInfo.GetSpecialization) == "function" and C_SpecializationInfo.GetSpecialization)
+            or (type(GetSpecialization) == "function" and GetSpecialization)
+        if specFn then
+            local okSpec, index = pcall(specFn)
+            index = okSpec and PlainNum(index, nil) or nil
+            if index and index >= 1 and index <= 3 then
+                primaryTree = index
+                return
+            end
         end
-        if type(GetSpecialization) == "function" then
-            local ok, index = pcall(GetSpecialization)
-            index = PlainNum(index, nil)
-            if index and index >= 1 and index <= 3 then primaryTree = index end
-        end
+    elseif type(GetSpecialization) == "function" then
+        local okSpec, index = pcall(GetSpecialization)
+        index = okSpec and PlainNum(index, nil) or nil
+        if index and index >= 1 and index <= 3 then primaryTree = index end
     end
 end
 
@@ -1502,12 +1788,14 @@ local function ReportProbe()
     Print("Interface: " .. client.iface .. "   secret guard: " .. tostring(client.secrets))
     Print("API: C_Spell " .. tostring(client.modern)
         .. "  C_Spell.IsSpellInRange " .. tostring(client.spellRange)
-        .. "  C_SpellBook " .. tostring(C_SpellBook ~= nil)
+        .. "  C_SpellBook(skillLines) " .. tostring(client.modernBook)
         .. "  C_TooltipInfo " .. tostring(client.tooltip)
         .. "  C_Item.IsItemInRange " .. tostring(client.itemRange)
-        .. "  C_SpecializationInfo " .. tostring(client.specInfo))
+        .. "  C_SpecializationInfo " .. tostring(client.specInfo)
+        .. "  C_Traits " .. tostring(client.traits))
     Print("Legacy globals: GetSpellInfo " .. tostring(type(GetSpellInfo) == "function")
         .. "  GetSpellBookItemName " .. tostring(type(GetSpellBookItemName) == "function")
+        .. "  GetNumSpellTabs " .. tostring(type(GetNumSpellTabs) == "function")
         .. "  GetNumTalentTabs " .. tostring(type(GetNumTalentTabs) == "function"))
     Print("Spell list: " .. #spells .. " resolved, " .. #skipped .. " skipped")
     local heap = 0

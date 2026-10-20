@@ -1,0 +1,11 @@
+## Interface: 50504, 50503
+## Title: Mage Range Indicator
+## Notes: Shows the shortest-range Mage spell that can still reach your target. Built for WoW Mists of Pandaria Classic.
+## Author: MRI
+## Version: 6.2.0
+## SavedVariables: MageRangeIndicatorDB
+## Category: Combat
+## IconTexture: Interface\Icons\Spell_Fire_FlameBolt
+## X-Website: https://github.com/chwaraf/MageRangeIndicator
+
+MageRangeIndicator.lua

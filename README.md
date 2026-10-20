@@ -4,9 +4,10 @@ Shows the shortest-range Mage spell that can still reach your target: one icon
 with the spell that reaches from where you are standing right now, so you know
 whether the mob is close enough to act on without moving.
 
-Built for **WoW: Forever** (the *Camelot* client, interface `16001`) and still
-working on the **Classic-era** clients (Classic Era / TBC) that the addon
-originally targeted.
+Built first for **WoW: Forever** (the *Camelot* client, interface `16001`) with
+first-class support across **Classic Era**, **TBC Classic / Anniversary**,
+**Wrath / Cataclysm / Mists Classic**, and **Mainline (Midnight)** from one
+shared codebase.
 
 ```
         [icon]           Fireball can reach 35 yd
@@ -18,14 +19,24 @@ originally targeted.
 
 | Client | Manifest | Interface | Path |
 | --- | --- | --- | --- |
-| WoW: Forever | `MageRangeIndicator_Camelot.toc` | 16001 | `World of Warcraft\_classic_beta_\Interface\AddOns\MageRangeIndicator\` |
-| TBC Classic / Anniversary | `MageRangeIndicator.toc` | 20504 | `World of Warcraft\_classic_\Interface\AddOns\MageRangeIndicator\` |
-| Classic Era | `MageRangeIndicator.toc` | 11509 (add `_Vanilla.toc` to declare it) | `World of Warcraft\_classic_era_\Interface\AddOns\MageRangeIndicator\` |
+| WoW: Forever (Camelot) | `MageRangeIndicator_Camelot.toc` / `_Forever.toc` | `16001` | `_classic_beta_\Interface\AddOns\MageRangeIndicator\` |
+| Classic Era | `MageRangeIndicator_Vanilla.toc` | `11509, 11508, 11507` | `_classic_era_\Interface\AddOns\MageRangeIndicator\` |
+| TBC Classic / Anniversary | `MageRangeIndicator_TBC.toc` | `20506, 20505, 20504` | `_anniversary_\` or `_classic_\Interface\AddOns\MageRangeIndicator\` |
+| Wrath / Titan Reforged | `MageRangeIndicator_Wrath.toc` | `38002, 30405, 30404` | `_classic_titan_\Interface\AddOns\MageRangeIndicator\` |
+| Cataclysm Classic | `MageRangeIndicator_Cata.toc` | `40402, 40401` | `_classic_\Interface\AddOns\MageRangeIndicator\` |
+| Mists of Pandaria Classic | `MageRangeIndicator_Mists.toc` | `50504, 50503` | `_classic_\Interface\AddOns\MageRangeIndicator\` |
+| Retail / Midnight | `MageRangeIndicator_Mainline.toc` | `120105, 120100, 120001` | `_retail_\Interface\AddOns\MageRangeIndicator\` |
+| Fallback (all clients) | `MageRangeIndicator.toc` | `16001, 11509, ..., 120105` | any client without a suffix match |
 
-The Forever client looks for `<AddonName>_Camelot.toc` before the unsuffixed
-file, so the same folder works in both installs. Only one Lua file is shared, and
-every client-specific call is probed at runtime - the addon never branches on
-`WOW_PROJECT_ID` alone.
+Each WoW client automatically loads its matching `<AddonName>_<Flavor>.toc`
+before `MageRangeIndicator.toc`, so one addon folder works out of the box across
+all installs without marking the addon out of date.
+
+Every subsystem is probed independently at runtime instead of assuming one `"modern"` vs `"legacy"` client split:
+
+* **Spell info & range checks**: `C_Spell.GetSpellInfo` / `C_Spell.IsSpellInRange` when available (Forever, Retail, AND modern-engine Classic Era / TBC / Wrath / Mists), with fallback to `GetSpellInfo` / `IsSpellInRange`.
+* **Spellbook scanning**: `C_SpellBook.GetNumSpellBookSkillLines` when present (Forever, Retail), automatically promoting the highest non-low-rank spell via `IsSpellBookItemLowRank`; falls through to tabbed `GetNumSpellTabs` + `GetSpellTabInfo` + `GetSpellBookItemInfo` + `GetSpellBookItemName` on Classic Era / TBC / Wrath / Cata / Mists (skipping `FUTURESPELL` slots and inactive Dual Spec tabs while promoting every spell to its highest learned rank).
+* **Primary spec & talents**: Classic 3-tree talent scan (`GetTalentInfo` and native `C_SpecializationInfo.GetTalentInfo`), Forever `C_Traits` group currencies (`GetGroupDisplayInfoByTreeID` + `GetGroupCurrencyInfo`), `C_SpecializationInfo.GetSpecializationInfo`, and active spec (`GetSpecialization`) on Mists / Retail.
 
 Restart the client if a new addon folder does not show up in the AddOns list.
 
@@ -82,8 +93,8 @@ anything while locked, so even a stray hover event cannot bring it back.
 list moved into `/mri status` and `/mri probe`, which print when asked:
 
 ```
-MageRangeIndicator: v6.1.0 ready - drag the icon, right-click to lock it. /mri help
-MageRangeIndicator: v6.1.0 ready - icon LOCKED (click-through), /mri lock to move it.
+MageRangeIndicator: v6.2.0 ready - drag the icon, right-click to lock it. /mri help
+MageRangeIndicator: v6.2.0 ready - icon LOCKED (click-through), /mri lock to move it.
 ```
 
 **Locking from the icon itself.** While the frame is unlocked you can drag it,
@@ -202,14 +213,13 @@ start-up. `ns` carries the addon namespace, and the only globals are the
 SavedVariables, the slash commands and the addon-compartment callbacks named in
 the TOC.
 
-The spec runs the addon outside the game, under real Lua 5.1, against a stub of
-both clients (`tests/wow_stub.lua`): a Forever client with `C_Spell`,
-`C_SpellBook`, secrets and spell data, and a Classic-era client with the legacy
-spellbook and talent globals.
+The spec runs the addon outside the game, under real Lua 5.1, against stubs for
+WoW: Forever, Classic Era, TBC Classic, Wrath Classic, Mists Classic, Mainline,
+and pure legacy clients (`tests/wow_stub.lua`).
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install lupa   # once
-tests/run.sh                                          # 100 checks
+tests/run.sh                                          # 343 checks
 ```
 
 It covers the selection logic on both clients (nearest reaching spell, spec
@@ -242,8 +252,12 @@ new requests, and repeated rescans never re-request data.
 | File | Purpose |
 | --- | --- |
 | `MageRangeIndicator.lua` | The addon |
-| `MageRangeIndicator_Camelot.toc` | Forever manifest (interface 16001) |
-| `MageRangeIndicator.toc` | Classic-era manifest |
-| `tests/wow_stub.lua` | Stub of both clients for the offline spec |
-| `tests/spec.lua` | The spec itself |
+| `MageRangeIndicator_Camelot.toc` / `_Forever.toc` | WoW: Forever manifests (interface 16001) |
+| `MageRangeIndicator_Vanilla.toc` | Classic Era manifest (interface 11509) |
+| `MageRangeIndicator_TBC.toc` | TBC Classic / Anniversary manifest (interface 20506) |
+| `MageRangeIndicator_Wrath.toc` / `_Cata.toc` / `_Mists.toc` | Wrath, Cataclysm and Mists Classic manifests |
+| `MageRangeIndicator_Mainline.toc` | Retail / Midnight manifest (interface 120105) |
+| `MageRangeIndicator.toc` | Multi-interface fallback manifest |
+| `tests/wow_stub.lua` | Multi-client WoW API stub for the offline spec |
+| `tests/spec.lua` | Offline spec (343 checks) |
 | `tests/run.sh` | Runs the spec under Lua 5.1 |

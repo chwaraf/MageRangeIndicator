@@ -43,8 +43,12 @@ function Stub.Reset()
     Stub.itemsCached = {}     -- [itemID] = name, for the buckets
     Stub.itemRanges = {}      -- [itemID] = yards
     Stub.specPoints = { 0, 40, 0 }
+    Stub.traitPoints = nil    -- Forever C_Traits group currency spent: { arc, fire, frost }
+    Stub.activeSpec = 1       -- Mists / Mainline active specialization index (1..3)
     Stub.specTuple = false    -- return C_SpecializationInfo's tuple shape
     Stub.talents = {}         -- legacy: [tab] = { { name, rank }, ... }
+    Stub.nativeTalentsOnly = false -- omit deprecated GetNumTalentTabs globals
+    Stub.spellTabs = nil      -- optional explicit { { offset, count, offSpecID, isGuild, shouldHide }, ... }
     Stub.class = "MAGE"
     Stub.race = "Human"
     Stub.shift = false
@@ -293,14 +297,24 @@ function Stub.AddSpell(name, id, maxRange, options)
         iconID = options.iconID or 134400,
         minRange = options.minRange or 0,
         maxRange = maxRange,
+        effectiveRange = options.effectiveRange,
         hasRange = options.hasRange,
         description = options.description,
     }
     Stub.idForName[name] = id
 end
 
-function Stub.AddBookSpell(name, id)
-    Stub.book[#Stub.book + 1] = { name = name, id = id, iconID = 134400 }
+function Stub.AddBookSpell(name, id, options)
+    options = options or {}
+    local info = id and Stub.spells[id]
+    Stub.book[#Stub.book + 1] = {
+        name = name,
+        id = id,
+        iconID = options.iconID or (info and info.iconID) or 134400,
+        slotType = options.slotType or "SPELL",
+        lowRank = options.lowRank == true,
+        isPassive = options.isPassive == true,
+    }
 end
 
 ---------------------------------------------------------------------------
@@ -309,6 +323,33 @@ end
 
 local function InstallShared(env)
     env.print = env.print
+
+    -- Reset any client-specific globals from a previous test mode so nothing
+    -- leaks across modes.
+    env.GetSpellInfo = nil
+    env.GetSpellTexture = nil
+    env.GetSpellBookItemName = nil
+    env.GetSpellBookItemInfo = nil
+    env.GetNumSpellTabs = nil
+    env.GetSpellTabInfo = nil
+    env.IsSpellHidden = nil
+    env.IsPassiveSpell = nil
+    env.IsSpellInRange = nil
+    env.IsItemInRange = nil
+    env.GetNumTalentTabs = nil
+    env.GetNumTalents = nil
+    env.GetTalentInfo = nil
+    env.GetSpecialization = nil
+    env.C_Traits = nil
+    env.C_ClassTalents = nil
+    env.C_GameRules = nil
+    env.WOW_PROJECT_MAINLINE = nil
+    env.WOW_PROJECT_CLASSIC = nil
+    env.WOW_PROJECT_BURNING_CRUSADE_CLASSIC = nil
+    env.WOW_PROJECT_WRATH_CLASSIC = nil
+    env.WOW_PROJECT_CATACLYSM_CLASSIC = nil
+    env.WOW_PROJECT_MISTS_CLASSIC = nil
+    env.WOW_PROJECT_CAMELOT = nil
 
     env.CreateFrame = function(kind, name, parent)
         if Stub.failCreateFrameFor and (kind or "Frame") == Stub.failCreateFrameFor then
@@ -400,6 +441,11 @@ local function InstallSpellNamespaces(env)
                 castTime = 0,
             }
         end,
+        GetSpellTexture = function(spell)
+            local id = type(spell) == "number" and spell or Stub.idForName[spell]
+            local info = id and Stub.spells[id]
+            return info and info.iconID or nil
+        end,
         IsSpellInRange = function(spell, unit)
             Count("isSpellInRange")
             if Stub.secretEnabled then return Stub.secret end
@@ -407,7 +453,8 @@ local function InstallSpellNamespaces(env)
             local info = id and Stub.spells[id]
             if not info or unit ~= "target" or not Stub.targetExists then return nil end
             if info.hasRange == false then return nil end
-            return Stub.distance <= (info.maxRange or 0)
+            local reach = info.effectiveRange or info.maxRange or 0
+            return Stub.distance <= reach
         end,
         SpellHasRange = function(spell)
             local id = type(spell) == "number" and spell or Stub.idForName[spell]
@@ -447,6 +494,10 @@ local function InstallSpellNamespaces(env)
                 itemType = env.Enum.SpellBookItemType.Spell,
             }
         end,
+        IsSpellBookItemLowRank = function(index)
+            local entry = Stub.book[index]
+            return entry ~= nil and entry.lowRank == true
+        end,
     }
 
     env.C_TooltipInfo = {
@@ -471,6 +522,9 @@ local function InstallSpellNamespaces(env)
     }
 
     env.C_SpecializationInfo = {
+        GetActiveSpecGroup = function() return 1 end,
+        GetCombatConfigIDForSpecGroup = function() return 101 end,
+        GetSpecialization = function() return Stub.activeSpec end,
         GetNumSpecializations = function() return 3 end,
         GetSpecializationInfo = function(index)
             local points = Stub.specPoints[index] or 0
@@ -480,12 +534,185 @@ local function InstallSpellNamespaces(env)
             return { pointsSpent = points, name = "Spec " .. index }
         end,
     }
-    env.GetSpecialization = function() return 1 end
+    env.GetSpecialization = function() return Stub.activeSpec end
 
-    env.GetBuildInfo = function() return "1.60.1", "70338", "Oct 13 2026", 16001 end
+    env.C_Traits = {
+        GetConfigInfo = function(configID)
+            if not Stub.traitPoints or configID ~= 101 then return nil end
+            return { ID = 101, treeIDs = { 1482 } }
+        end,
+        GetGroupDisplayInfoByTreeID = function(treeID)
+            if not Stub.traitPoints or treeID ~= 1482 then return {} end
+            return {
+                { groupID = 11, displayName = "Arcane" },
+                { groupID = 12, displayName = "Fire" },
+                { groupID = 13, displayName = "Frost" },
+            }
+        end,
+        GetGroupCurrencyInfo = function(configID)
+            if not Stub.traitPoints or configID ~= 101 then return {} end
+            return {
+                { traitNodeGroupID = 11, currencyInfos = { { spent = Stub.traitPoints[1] or 0 } } },
+                { traitNodeGroupID = 12, currencyInfos = { { spent = Stub.traitPoints[2] or 0 } } },
+                { traitNodeGroupID = 13, currencyInfos = { { spent = Stub.traitPoints[3] or 0 } } },
+            }
+        end,
+    }
+
+    env.GetBuildInfo = function() return "1.60.1", "70450", "Oct 20 2026", 16001 end
     env.WOW_PROJECT_ID = 18
     env.WOW_PROJECT_CAMELOT = 18
     env.LE_EXPANSION_LEVEL_CURRENT = 0
+end
+
+-- Exact shape of modern-engine Classic clients (Classic Era 1.15.9, TBC
+-- Anniversary 2.5.6, Wrath 3.80.2, Mists 5.5.4), verified against
+-- Gethe/wow-ui-source:
+--   * C_Spell, C_TooltipInfo, C_Item and C_SpecializationInfo ARE present
+--   * global GetSpellInfo is GONE (nil)
+--   * C_SpellBook has ONLY the 7 Classic helper functions - NOT
+--     GetNumSpellBookSkillLines / GetSpellBookItemInfo
+--   * the spellbook itself uses GetNumSpellTabs + GetSpellTabInfo +
+--     GetSpellBookItemInfo + GetSpellBookItemName + GetSpellTexture
+local function InstallModernClassicClient(env, flavor)
+    InstallSpellNamespaces(env)
+
+    env.C_Traits = nil
+    env.GetSpellInfo = nil
+
+    -- Only the 7 C_SpellBook functions present in Classic Era / TBC / Mists.
+    env.C_SpellBook = {
+        FindBaseSpellByID = function(id) return id end,
+        FindFlyoutSlotBySpellID = function() return nil end,
+        FindSpellOverrideByID = function(id) return id end,
+        HasPetSpells = function() return nil end,
+        IsSpellInSpellBook = function(id)
+            for _, entry in ipairs(Stub.book) do
+                if entry.id == id and entry.slotType == "SPELL" then return true end
+            end
+            return false
+        end,
+        IsSpellKnown = function(id)
+            for _, entry in ipairs(Stub.book) do
+                if entry.id == id and entry.slotType == "SPELL" then return true end
+            end
+            return false
+        end,
+        IsSpellKnownOrInSpellBook = function(id)
+            for _, entry in ipairs(Stub.book) do
+                if entry.id == id and entry.slotType == "SPELL" then return true end
+            end
+            return false
+        end,
+    }
+
+    env.GetNumSpellTabs = function()
+        if Stub.spellTabs then return #Stub.spellTabs end
+        return 1
+    end
+    env.GetSpellTabInfo = function(tab)
+        if Stub.spellTabs then
+            local info = Stub.spellTabs[tab]
+            if not info then return nil end
+            return info.name or ("Tab " .. tab), 134400, info.offset or 0, info.count or 0,
+                info.isGuild == true, info.offSpecID or 0, info.shouldHide == true
+        end
+        if tab ~= 1 then return nil end
+        return "General", 134400, 0, #Stub.book, false, 0, false
+    end
+    env.GetSpellBookItemInfo = function(slot)
+        local entry = Stub.book[slot]
+        if not entry then return nil end
+        return entry.slotType or "SPELL", entry.id
+    end
+    env.GetSpellBookItemName = function(slot)
+        local entry = Stub.book[slot]
+        if not entry then return nil end
+        return entry.name, entry.subName or "", entry.id
+    end
+    env.GetSpellTexture = function(slotOrName)
+        if type(slotOrName) == "number" then
+            local entry = Stub.book[slotOrName]
+            return entry and entry.iconID or nil
+        end
+        local id = Stub.idForName[slotOrName]
+        local info = id and Stub.spells[id]
+        return info and info.iconID or nil
+    end
+    env.IsPassiveSpell = function(slot)
+        local entry = Stub.book[slot]
+        return entry ~= nil and entry.isPassive == true
+    end
+    env.IsSpellInRange = function(spell, second, third)
+        local unit = third or second
+        if unit ~= "target" or not Stub.targetExists then return nil end
+        local name
+        if type(spell) == "number" then
+            local entry = Stub.book[spell]
+            name = entry and entry.name:lower() or nil
+        elseif type(spell) == "string" then
+            name = spell:lower()
+        end
+        local yards = name and Stub.legacyRanges[name]
+        if not yards then return nil end
+        return Stub.distance <= yards and 1 or 0
+    end
+
+    env.C_SpecializationInfo.GetTalentInfo = function(query)
+        if type(query) ~= "table" then return nil end
+        local tab = query.specializationIndex
+        local idx = query.talentIndex
+        local talent = tab and idx and (Stub.talents[tab] or {})[idx]
+        if not talent then return nil end
+        return {
+            name = talent.name,
+            icon = 134400,
+            tier = 1,
+            column = 1,
+            rank = talent.rank or 0,
+            maxRank = talent.max or 2,
+            talentID = tab * 100 + idx,
+        }
+    end
+    env.C_SpecializationInfo.GetSpecializationInfo = function(index)
+        local pts = 0
+        if flavor ~= "mists" then
+            for _, t in ipairs(Stub.talents[index] or {}) do
+                pts = pts + (t.rank or 0)
+            end
+            if pts == 0 then pts = Stub.specPoints[index] or 0 end
+        end
+        return index, "Tree " .. index, "", 134400, "DAMAGER", 4, pts, "", 0, true
+    end
+
+    if flavor ~= "mists" and not Stub.nativeTalentsOnly then
+        env.GetNumTalentTabs = function() return 3 end
+        env.GetNumTalents = function(tab) return #(Stub.talents[tab] or {}) end
+        env.GetTalentInfo = function(tab, index)
+            local talent = (Stub.talents[tab] or {})[index]
+            if not talent then return nil end
+            return talent.name, 134400, 1, 1, talent.rank or 0, talent.max or 2
+        end
+    end
+
+    env.WOW_PROJECT_CAMELOT = nil
+    if flavor == "era" then
+        env.GetBuildInfo = function() return "1.15.9", "70003", "Oct 10 2026", 11509 end
+        env.WOW_PROJECT_CLASSIC = 2
+        env.WOW_PROJECT_ID = 2
+    elseif flavor == "tbc_modern" then
+        env.GetBuildInfo = function() return "2.5.6", "70006", "Oct 10 2026", 20506 end
+        env.WOW_PROJECT_BURNING_CRUSADE_CLASSIC = 5
+        env.WOW_PROJECT_ID = 5
+    elseif flavor == "wrath" then
+        env.GetBuildInfo = function() return "3.80.2", "70372", "Oct 15 2026", 38002 end
+        env.WOW_PROJECT_WRATH_CLASSIC = 11
+        env.WOW_PROJECT_ID = 11
+    elseif flavor == "mists" then
+        env.GetBuildInfo = function() return "5.5.4", "70469", "Oct 18 2026", 50504 end
+        env.WOW_PROJECT_MISTS_CLASSIC = 19
+        env.WOW_PROJECT_ID = 19
+    end
 end
 
 local function InstallLegacyClient(env)
@@ -536,6 +763,15 @@ function Stub.Install(mode)
     InstallShared(env)
     if mode == "forever" then
         InstallSpellNamespaces(env)
+    elseif mode == "mainline" then
+        InstallSpellNamespaces(env)
+        env.C_Traits = nil
+        env.WOW_PROJECT_CAMELOT = nil
+        env.WOW_PROJECT_MAINLINE = 1
+        env.WOW_PROJECT_ID = 1
+        env.GetBuildInfo = function() return "12.1.5", "70448", "Oct 19 2026", 120105 end
+    elseif mode == "era" or mode == "tbc_modern" or mode == "wrath" or mode == "mists" then
+        InstallModernClassicClient(env, mode)
     elseif mode == "tbc" then
         InstallLegacyClient(env)
     else
