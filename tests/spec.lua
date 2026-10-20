@@ -1088,7 +1088,6 @@ end
 local function testTocManifests()
     local manifests = {
         { file = "MageRangeIndicator_Camelot.toc",  iface = "16001" },
-        { file = "MageRangeIndicator_Forever.toc",  iface = "16001" },
         { file = "MageRangeIndicator_Vanilla.toc",  iface = "11509" },
         { file = "MageRangeIndicator_TBC.toc",      iface = "20506" },
         { file = "MageRangeIndicator_Wrath.toc",    iface = "38002" },

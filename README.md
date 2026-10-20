@@ -19,7 +19,7 @@ shared codebase.
 
 | Client | Manifest | Interface | Path |
 | --- | --- | --- | --- |
-| WoW: Forever (Camelot) | `MageRangeIndicator_Camelot.toc` / `_Forever.toc` | `16001` | `_classic_beta_\Interface\AddOns\MageRangeIndicator\` |
+| WoW: Forever (Camelot) | `MageRangeIndicator_Camelot.toc` | `16001` | `_classic_beta_\Interface\AddOns\MageRangeIndicator\` |
 | Classic Era | `MageRangeIndicator_Vanilla.toc` | `11509, 11508, 11507` | `_classic_era_\Interface\AddOns\MageRangeIndicator\` |
 | TBC Classic / Anniversary | `MageRangeIndicator_TBC.toc` | `20506, 20505, 20504` | `_anniversary_\` or `_classic_\Interface\AddOns\MageRangeIndicator\` |
 | Wrath / Titan Reforged | `MageRangeIndicator_Wrath.toc` | `38002, 30405, 30404` | `_classic_titan_\Interface\AddOns\MageRangeIndicator\` |
@@ -252,12 +252,12 @@ new requests, and repeated rescans never re-request data.
 | File | Purpose |
 | --- | --- |
 | `MageRangeIndicator.lua` | The addon |
-| `MageRangeIndicator_Camelot.toc` / `_Forever.toc` | WoW: Forever manifests (interface 16001) |
+| `MageRangeIndicator_Camelot.toc` | WoW: Forever manifest (interface 16001) |
 | `MageRangeIndicator_Vanilla.toc` | Classic Era manifest (interface 11509) |
 | `MageRangeIndicator_TBC.toc` | TBC Classic / Anniversary manifest (interface 20506) |
 | `MageRangeIndicator_Wrath.toc` / `_Cata.toc` / `_Mists.toc` | Wrath, Cataclysm and Mists Classic manifests |
 | `MageRangeIndicator_Mainline.toc` | Retail / Midnight manifest (interface 120105) |
 | `MageRangeIndicator.toc` | Multi-interface fallback manifest |
 | `tests/wow_stub.lua` | Multi-client WoW API stub for the offline spec |
-| `tests/spec.lua` | Offline spec (343 checks) |
+| `tests/spec.lua` | Offline spec (340 checks) |
 | `tests/run.sh` | Runs the spec under Lua 5.1 |
