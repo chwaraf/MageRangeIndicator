@@ -38,7 +38,7 @@
 local addonName, ns = ...
 ns = ns or {}
 
-local ADDON_VERSION = "6.2.0"
+local ADDON_VERSION = "6.2.1"
 
 ---------------------------------------------------------------------------
 -- 1. Secrets and plain-value helpers
@@ -1449,19 +1449,34 @@ local function ApplyOpacity()
     mainFrame:SetAlpha(db.opacity or 1.0)
 end
 
--- Mouse input has two halves - clicks and motion - and this icon is a Button,
--- which takes both by default. EnableMouse(false) is not enough on its own to
--- stop hover events reaching a Button, so both flags are set explicitly: a
--- locked icon must be genuinely click-through, tooltip included.
+-- Mouse input has multiple independent C++ flags across WoW clients
+-- (EnableMouse, EnableMouseMotion / SetMouseMotionEnabled,
+-- SetMouseClickEnabled, EnableMouseWheel), AND in WoW 10.0+ (including
+-- WoW: Forever, Classic Era, TBC, Wrath, Cata, Mists and Mainline) calling
+-- SetScript("OnMouseUp"/"OnDragStart") or SetScript("OnEnter"/"OnLeave")
+-- implicitly turns click / motion handling BACK ON in C++. Every flag must
+-- therefore be driven explicitly AND re-applied AFTER all SetScript calls.
+local function SetRegionMouse(frame, enabled)
+    if not frame then return end
+    if type(frame.EnableMouse) == "function" then
+        TryCall("EnableMouse", frame.EnableMouse, frame, enabled)
+    end
+    if type(frame.EnableMouseMotion) == "function" then
+        TryCall("EnableMouseMotion", frame.EnableMouseMotion, frame, enabled)
+    end
+    if type(frame.SetMouseMotionEnabled) == "function" then
+        TryCall("SetMouseMotionEnabled", frame.SetMouseMotionEnabled, frame, enabled)
+    end
+    if type(frame.SetMouseClickEnabled) == "function" then
+        TryCall("SetMouseClickEnabled", frame.SetMouseClickEnabled, frame, enabled)
+    end
+    if type(frame.EnableMouseWheel) == "function" then
+        TryCall("EnableMouseWheel", frame.EnableMouseWheel, frame, false)
+    end
+end
+
 local function SetMouseEnabled(enabled)
-    if not mainFrame then return end
-    mainFrame:EnableMouse(enabled)
-    if type(mainFrame.SetMouseMotionEnabled) == "function" then
-        TryCall("SetMouseMotionEnabled", mainFrame.SetMouseMotionEnabled, mainFrame, enabled)
-    end
-    if type(mainFrame.SetMouseClickEnabled) == "function" then
-        TryCall("SetMouseClickEnabled", mainFrame.SetMouseClickEnabled, mainFrame, enabled)
-    end
+    SetRegionMouse(mainFrame, enabled)
 end
 
 -- A tooltip that is up when the icon is locked can never be hidden by OnLeave,
@@ -1482,19 +1497,28 @@ end
 
 local function ApplyLock()
     if not mainFrame or not db then return end
-    mainFrame:SetMovable(not db.locked)
     if db.locked then
-        -- Non-interactive while locked: the icon stops taking the mouse
-        -- altogether, so clicks pass through to whatever is behind it. That
-        -- also means no tooltip and no mouse shortcut; the way back is
-        -- /mri lock, which the lock message and the login message both say.
+        -- Non-interactive while locked: stop any in-progress move, clear both
+        -- drag and click registrations, and turn every mouse flag off so left
+        -- clicks, right-click camera turns, wheel zoom and hover tooltips all
+        -- pass straight through to the game world behind the icon.
+        pcall(mainFrame.StopMovingOrSizing, mainFrame)
+        mainFrame:SetMovable(false)
+        pcall(mainFrame.RegisterForDrag, mainFrame)
+        if type(mainFrame.RegisterForClicks) == "function" then
+            TryCall("RegisterForClicks", mainFrame.RegisterForClicks, mainFrame)
+        end
         SetMouseEnabled(false)
         HideOwnedTooltip()
         if glowTex then glowTex:Hide() end
         if dragLabel then dragLabel:Hide() end
     else
+        mainFrame:SetMovable(true)
         SetMouseEnabled(true)
         mainFrame:RegisterForDrag("LeftButton")
+        if type(mainFrame.RegisterForClicks) == "function" then
+            TryCall("RegisterForClicks", mainFrame.RegisterForClicks, mainFrame, "AnyUp")
+        end
         if glowTex then glowTex:Show() end
         if dragLabel then dragLabel:Show() end
     end
@@ -1635,6 +1659,7 @@ local function CreateUI()
 
     local pulse, direction = 0.3, 1
     local pulser = CreateFrame("Frame", nil, mainFrame)
+    SetRegionMouse(pulser, false)
     pulser:SetScript("OnUpdate", function(_, elapsed)
         if not glowTex or not glowTex:IsShown() or not db or db.locked then return end
         pulse = pulse + (elapsed * 1.2 * direction)
@@ -1643,17 +1668,15 @@ local function CreateUI()
         glowTex:SetAlpha(pulse)
     end)
 
-    -- The visuals and the saved state come first, so a wiring failure below
-    -- can never leave the icon showing the wrong thing again.
-    ApplyLock()
     ShowIdle()
 
-    -- Right-click locks the icon. There is no mouse shortcut for unlocking:
-    -- a locked icon is click-through and takes no mouse at all, so /mri lock is
-    -- the way back.
-    if type(mainFrame.RegisterForClicks) == "function" then
-        TryCall("RegisterForClicks", mainFrame.RegisterForClicks, mainFrame, "AnyUp")
-    end
+    -- Wire ALL mouse and hover scripts BEFORE ApplyLock(): in WoW 10.0+
+    -- (including Forever, Classic Era, TBC, Wrath, Cata, Mists and Mainline),
+    -- calling SetScript("OnMouseUp", fn) or SetScript("OnEnter", fn) implicitly
+    -- flips MouseClickEnabled / MouseMotionEnabled back ON in C++. Running
+    -- every SetScript inside SafeScript (pcall) first and calling ApplyLock()
+    -- LAST guarantees both that no failure can skip ApplyLock() AND that a
+    -- locked icon ends CreateUI genuinely click-through in C++.
     SafeScript(mainFrame, "OnMouseUp", function(_, button)
         if button ~= "RightButton" or not db or db.locked then return end
         if ShiftHeld() then return end
@@ -1700,6 +1723,8 @@ local function CreateUI()
     SafeScript(mainFrame, "OnLeave", function()
         if type(GameTooltip) == "table" then GameTooltip:Hide() end
     end)
+
+    ApplyLock()
 end
 
 ---------------------------------------------------------------------------
@@ -1820,6 +1845,15 @@ local function ReportProbe()
         buckets[#buckets + 1] = bucket.yards .. (bucket.item and "*" or "")
     end
     Print("Distance buckets: " .. (#buckets > 0 and table.concat(buckets, " ") or "none") .. "   (* item check)")
+    if mainFrame then
+        local okE, en = pcall(function() return mainFrame.IsMouseEnabled and mainFrame:IsMouseEnabled() end)
+        local okC, cl = pcall(function() return mainFrame.IsMouseClickEnabled and mainFrame:IsMouseClickEnabled() end)
+        local okM, mo = pcall(function() return mainFrame.IsMouseMotionEnabled and mainFrame:IsMouseMotionEnabled() end)
+        Print("Mouse: locked=" .. tostring(db and db.locked)
+            .. "  enabled=" .. tostring(okE and en or nil)
+            .. "  click=" .. tostring(okC and cl or nil)
+            .. "  motion=" .. tostring(okM and mo or nil))
+    end
     if stats.wiringFailures > 0 then
         Print("Wiring failures: " .. stats.wiringFailures .. "  last: " .. tostring(ns.lastWiringError))
     end
@@ -2061,6 +2095,7 @@ end
 
 function events:PLAYER_ENTERING_WORLD()
     ns.QueueInit()
+    if mainFrame then ApplyLock() end
 end
 
 function events:PLAYER_TARGET_CHANGED()
@@ -2121,6 +2156,7 @@ end
 
 function events:PLAYER_REGEN_ENABLED()
     inCombatLockdown = false
+    if mainFrame then ApplyLock() end
     updateElapsed = 999
     lastState = ""
 end

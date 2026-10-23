@@ -141,15 +141,49 @@ function Widget:EnableMouse(value)
     self.motion = value
     self.click = value
 end
+function Widget:EnableMouseMotion(value) self.motion = value end
+function Widget:EnableMouseWheel(value) self.wheel = value end
 function Widget:SetMouseMotionEnabled(value) self.motion = value end
 function Widget:SetMouseClickEnabled(value) self.click = value end
+function Widget:IsMouseEnabled() return self.mouse == true end
 function Widget:IsMouseMotionEnabled() return self.motion == true end
 function Widget:IsMouseClickEnabled() return self.click == true end
+function Widget:IsMouseWheelEnabled() return self.wheel == true end
 function Widget:IsMouseOver() return self.hovered == true end
 function Widget:RegisterForDrag(...) self.drag = { ... } end
 function Widget:StartMoving() self.moving = true end
 function Widget:StopMovingOrSizing() self.moving = false end
-function Widget:SetScript(name, fn) self.scripts[name] = fn end
+local CLICK_SCRIPTS = {
+    OnMouseDown = true,
+    OnMouseUp = true,
+    OnClick = true,
+    PreClick = true,
+    PostClick = true,
+    OnDoubleClick = true,
+}
+
+local MOTION_SCRIPTS = {
+    OnEnter = true,
+    OnLeave = true,
+}
+
+function Widget:SetScript(name, fn)
+    self.scripts[name] = fn
+    -- On every modern-engine WoW client (10.0+ CSimpleScriptRegion::SetScript:
+    -- WoW: Forever 1.60.1, Classic Era 1.15.9, TBC 2.5.6, Wrath 3.80.2,
+    -- Mists 5.5.4, Retail 12.1.5), binding a non-nil click/mouse script
+    -- implicitly calls SetMouseClickEnabled(true), and binding OnEnter/OnLeave
+    -- implicitly calls SetMouseMotionEnabled(true).
+    if fn ~= nil and Stub.mode ~= "tbc" then
+        if CLICK_SCRIPTS[name] then
+            self.click = true
+            self.mouse = true
+        elseif MOTION_SCRIPTS[name] then
+            self.motion = true
+            self.mouse = true
+        end
+    end
+end
 function Widget:GetScript(name) return self.scripts[name] end
 function Widget:RegisterEvent(event) self.events[event] = true end
 function Widget:UnregisterEvent(event) self.events[event] = nil end

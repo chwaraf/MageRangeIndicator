@@ -80,21 +80,24 @@ coalesced rebuild rather than scheduling its own.
 compartment through the TOC (`AddonCompartmentFunc`) and the click toggles the
 indicator.
 
-**A locked icon never shows a tooltip.** Mouse input has two halves (clicks
-and motion) and this icon is a Button, which takes both by default;
-`EnableMouse(false)` alone is not enough on its own, so both flags are set
-explicitly when locking. A tooltip that is open *at the moment you lock* is
-cleared at that moment too, because a click-through frame never receives the
-`OnLeave` that would otherwise hide it — that is the one that used to come back
-after a reload or a loading screen. The hover handler also refuses to show
-anything while locked, so even a stray hover event cannot bring it back.
+**A locked icon is genuinely click-through across every client.** On WoW 10.0+
+engines (including **WoW: Forever**, **Classic Era**, **TBC**, **Wrath**,
+**Cata**, **Mists** and **Mainline**), calling `SetScript("OnMouseUp", fn)` or
+`SetScript("OnEnter", fn)` implicitly re-enables `MouseClickEnabled` /
+`MouseMotionEnabled` in C++ even if `EnableMouse(false)` was called beforehand.
+`CreateUI()` therefore wires all scripts first and runs `ApplyLock()` **last**,
+explicitly clearing drag/click registrations (`RegisterForDrag()`,
+`RegisterForClicks()`), turning off `EnableMouse`, `EnableMouseMotion`,
+`SetMouseMotionEnabled`, `SetMouseClickEnabled` and `EnableMouseWheel` on both
+`MRIFrame` and child frames, and re-enforcing `ApplyLock()` across loading
+screens and combat transitions. `/mri probe` prints the live C++ mouse flags.
 
 **One line at login, and nothing else.** The client, the build and the spell
 list moved into `/mri status` and `/mri probe`, which print when asked:
 
 ```
-MageRangeIndicator: v6.2.0 ready - drag the icon, right-click to lock it. /mri help
-MageRangeIndicator: v6.2.0 ready - icon LOCKED (click-through), /mri lock to move it.
+MageRangeIndicator: v6.2.1 ready - drag the icon, right-click to lock it. /mri help
+MageRangeIndicator: v6.2.1 ready - icon LOCKED (click-through), /mri lock to move it.
 ```
 
 **Locking from the icon itself.** While the frame is unlocked you can drag it,
@@ -219,7 +222,7 @@ and pure legacy clients (`tests/wow_stub.lua`).
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install lupa   # once
-tests/run.sh                                          # 343 checks
+tests/run.sh                                          # 984 checks
 ```
 
 It covers the selection logic on both clients (nearest reaching spell, spec
@@ -259,5 +262,5 @@ new requests, and repeated rescans never re-request data.
 | `MageRangeIndicator_Mainline.toc` | Retail / Midnight manifest (interface 120105) |
 | `MageRangeIndicator.toc` | Multi-interface fallback manifest |
 | `tests/wow_stub.lua` | Multi-client WoW API stub for the offline spec |
-| `tests/spec.lua` | Offline spec (340 checks) |
+| `tests/spec.lua` | Offline spec (984 checks) |
 | `tests/run.sh` | Runs the spec under Lua 5.1 |

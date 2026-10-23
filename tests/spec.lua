@@ -1110,6 +1110,65 @@ local function testTocManifests()
     end
 end
 
+local function AssertFrameClickThrough(frame, label)
+    eq(frame:IsMouseEnabled(), false, label .. ": IsMouseEnabled() is false")
+    eq(frame:IsMouseClickEnabled(), false, label .. ": IsMouseClickEnabled() is false")
+    eq(frame:IsMouseMotionEnabled(), false, label .. ": IsMouseMotionEnabled() is false")
+    eq(frame:IsMouseWheelEnabled(), false, label .. ": IsMouseWheelEnabled() is false")
+    eq(frame.movable, false, label .. ": frame is not movable")
+    eq(#(frame.drag or {}), 0, label .. ": drag buttons are cleared")
+    eq(#(frame.clicks or {}), 0, label .. ": click buttons are cleared")
+    for idx, child in ipairs(frame.children or {}) do
+        eq(child:IsMouseClickEnabled(), false, label .. ": child " .. idx .. " takes no clicks")
+        eq(child:IsMouseMotionEnabled(), false, label .. ": child " .. idx .. " takes no motion")
+    end
+    check(not Stub.ClickIcon("LeftButton"), label .. ": left-click passes through")
+    check(not Stub.ClickIcon("RightButton"), label .. ": right-click passes through")
+    check(not Stub.HoverIcon(), label .. ": mouseover passes through")
+    check(not Stub.TooltipShown(), label .. ": no tooltip while locked")
+end
+
+local function testClickThroughAllVersions()
+    local modes = { "forever", "era", "tbc_modern", "wrath", "mists", "mainline", "tbc" }
+    for _, mode in ipairs(modes) do
+        -- 1. Login / reload while ALREADY locked (the exact SetScript regression path).
+        local nsLocked = Boot(Load(mode, function()
+            if mode == "tbc" then
+                Stub.AddBookSpell("Fireball", nil)
+                Stub.legacyRanges["fireball"] = 35
+            else
+                Stub.AddSpell("Fireball", 133, 35, { iconID = 135812 })
+                Stub.AddBookSpell("Fireball", 133, { iconID = 135812 })
+            end
+            MageRangeIndicatorDB = { locked = true, iconSize = 52, opacity = 1, posX = 120, posY = 80 }
+        end))
+        check(nsLocked ~= nil, mode .. ": booted while locked")
+        if nsLocked then
+            local frame = Stub.FindFrame("MRIFrame")
+            check(frame ~= nil, mode .. ": MRIFrame created")
+            if frame then
+                AssertFrameClickThrough(frame, mode .. " (locked login)")
+
+                -- Across loading screens and combat transitions:
+                Stub.FireEvent("PLAYER_ENTERING_WORLD")
+                Stub.FireEvent("PLAYER_REGEN_DISABLED")
+                Stub.FireEvent("PLAYER_REGEN_ENABLED")
+                AssertFrameClickThrough(frame, mode .. " (after zone + combat)")
+
+                -- Unlock with /mri lock -> interactive -> right-click to lock -> click-through again:
+                Stub.RunSlash("lock")
+                eq(nsLocked.db.locked, false, mode .. ": /mri lock unlocks")
+                eq(frame:IsMouseClickEnabled(), true, mode .. ": unlocked takes clicks")
+                eq(frame:IsMouseMotionEnabled(), true, mode .. ": unlocked takes hover")
+                check(Stub.HoverIcon(), mode .. ": hover works while unlocked")
+                check(Stub.ClickIcon("RightButton"), mode .. ": right-click locks when unlocked")
+                eq(nsLocked.db.locked, true, mode .. ": right-click locked the frame")
+                AssertFrameClickThrough(frame, mode .. " (after right-click lock)")
+            end
+        end
+    end
+end
+
 ---------------------------------------------------------------------------
 -- Run
 ---------------------------------------------------------------------------
@@ -1142,6 +1201,7 @@ runTest(testClassicEraNativeTalentsNoEnglishTooltip, "testClassicEraNativeTalent
 runTest(testForeverTraitTreesAndRanks, "testForeverTraitTreesAndRanks")
 runTest(testAllOtherFlavors, "testAllOtherFlavors")
 runTest(testTocManifests, "testTocManifests")
+runTest(testClickThroughAllVersions, "testClickThroughAllVersions")
 
 if #failures > 0 then
     io.write("FAILED ", #failures, " of ", passed + #failures, " checks\n")
